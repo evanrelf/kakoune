@@ -38,7 +38,7 @@ add-highlighter shared/cabal/code default-region group
 add-highlighter shared/cabal/line_comment region (--) $ fill comment
 add-highlighter shared/cabal/comment region -recurse \{- \{- -\} fill comment
 
-add-highlighter shared/cabal/code/ regex \b(true|false)\b|(([<>]?=?)?\d+(\.\d+)+) 0:value
+add-highlighter shared/cabal/code/ regex \b(true|false)\b|((\^?[<>]?=?)?\d+(\.\d+)+) 0:value
 add-highlighter shared/cabal/code/ regex \b(if|else)\b 0:keyword
 add-highlighter shared/cabal/code/ regex ^\h*([A-Za-z][A-Za-z0-9_-]*)\h*: 1:variable
 
