@@ -12,6 +12,7 @@
 #include "option.hh"
 #include "option_types.hh"
 #include "profile.hh"
+#include "utils.hh"
 
 #include <algorithm>
 
@@ -131,7 +132,13 @@ const DisplayBuffer& Window::update_display_buffer(const Context& context)
     if (m_dimensions == DisplayCoord{0,0})
         return m_display_buffer;
 
-    kak_assert(&buffer() == &context.buffer());
+    if (&buffer() != &context.buffer())
+    {
+        m_display_buffer.lines().clear();
+        m_display_buffer.set_timestamp(-1);
+        return m_display_buffer;
+    }
+
     DisplaySetup setup = compute_display_setup(context);
 
     for (LineCount line = 0; line < setup.line_count; ++line)
