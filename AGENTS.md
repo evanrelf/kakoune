@@ -1,9 +1,9 @@
 # AGENTS.md
 
 This is a fork of Kakoune, a modal text editor written in C++, that is being
-incrementally ported to Rust. `RUST_MIGRATION.md` has the plan, its status
-and the decisions behind it; read it before working on the port, and update it
-as the plan changes.
+incrementally ported to Rust. `RUST_MIGRATION.md` has the plan and its
+status; read it before working on the port, and update it as the plan
+changes.
 
 In this project, you are explicitly allowed to use version control tools and
 author commits yourself. You are encouraged to make commits often. Break your
