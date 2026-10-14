@@ -92,18 +92,18 @@ Candidates, roughly in order of how few project dependencies they have:
 - `color`, `keys`, `parameters_parser`: parsing and formatting with few
   dependencies.
 - `regex_vm` (about 2,500 lines): Kakoune's own regex engine, self-contained
-  but performance-critical. Port it behind the existing `regex.hh` interface
-  and benchmark it against the C++ before switching. Its matching semantics
-  must be preserved exactly; it is not a candidate for the `regex` crate.
+  and on the hot path of highlighting and selection. Port it behind the
+  existing `regex.hh` interface. Its matching semantics must be preserved
+  exactly; it is not a candidate for the `regex` crate.
 - `word_db`: the first module that needs to call into `Buffer`, so it's the
   first real test of Rust → C++ calls on core types.
 - `json` with `json_ui`: `parse_json` produces Kakoune's type-erased `Value`,
   so it's cheaper to port the JSON UI and its parser together than to bridge
   `Value`.
 
-Avoid porting small, hot helpers (hashing, UTF-8 iteration) early: calls
-across the bridge can't be inlined unless cross-language LTO is set up, so
-they're likely to get slower until their callers move too.
+Small helpers called from all over the C++ (hashing, UTF-8 iteration) are
+better ported alongside their callers than on their own, since each call
+would otherwise cross the bridge.
 
 ### Phase 3: the core
 
@@ -131,18 +131,10 @@ file at a time.
 
 ## Cross-cutting work
 
-- **Benchmarks.** Before porting performance-sensitive code (regex, buffers,
-  display), set up repeatable benchmarks (startup, large files, regex-heavy
-  highlighting, completion) so regressions are visible.
 - **Generated header dependencies.** Each C++ object including a
   cxx-generated header currently needs its own Makefile rule and recompiles
   whenever the Rust library changes. Find a better mechanism before many
   files include generated headers.
-- **Upstream merges.** The fork keeps merging upstream and contributor
-  branches. Once a module is ported, upstream changes to its C++ conflict with
-  the shim, and have to be re-applied in Rust by hand. Check upstream activity
-  in a module before porting it, and keep the shims small so conflicts stay
-  obvious.
 - **Platforms.** Only macOS has been built with the Rust library linked in.
   Linux link flags are in the Makefile but untested; other platforms may need
   more.
