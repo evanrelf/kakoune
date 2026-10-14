@@ -20,6 +20,23 @@
         "type": "github"
       }
     },
+    "kakoune-upstream": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791695950,
+        "narHash": "sha256-pPnm0F4VKUwtFdmXZbYBYR/DQHiw71GXnvld+hAqH44=",
+        "owner": "mawww",
+        "repo": "kakoune",
+        "rev": "4d4ee86c2d039c2a5f29f109e7e59105d2073046",
+        "type": "github"
+      },
+      "original": {
+        "owner": "mawww",
+        "repo": "kakoune",
+        "rev": "4d4ee86c2d039c2a5f29f109e7e59105d2073046",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1789998861,
@@ -39,6 +56,7 @@
     "root": {
       "inputs": {
         "flake-parts": "flake-parts",
+        "kakoune-upstream": "kakoune-upstream",
         "nixpkgs": "nixpkgs",
         "systems": "systems"
       }

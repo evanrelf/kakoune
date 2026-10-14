@@ -4,6 +4,12 @@
       url = "github:hercules-ci/flake-parts";
       inputs.nixpkgs-lib.follows = "nixpkgs";
     };
+    # The upstream commit this fork branched from, as a reference to test the
+    # Rust port against
+    kakoune-upstream = {
+      url = "github:mawww/kakoune/4d4ee86c2d039c2a5f29f109e7e59105d2073046";
+      flake = false;
+    };
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     systems.url = "github:nix-systems/default";
   };
@@ -72,6 +78,23 @@
               $out/bin/kak -ui json -e "kill 0"
               runHook postInstallCheck
             '';
+
+            meta.mainProgram = "kak";
+          };
+
+        packages.kakoune-upstream =
+          pkgs.stdenv.mkDerivation {
+            pname = "kakoune-upstream";
+            version = inputs.kakoune-upstream.shortRev;
+
+            src = inputs.kakoune-upstream;
+
+            makeFlags = [
+              "PREFIX=${placeholder "out"}"
+              "version=${config.packages.kakoune-upstream.version}"
+            ];
+
+            enableParallelBuilding = true;
 
             meta.mainProgram = "kak";
           };
