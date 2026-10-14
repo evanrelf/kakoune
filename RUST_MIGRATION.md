@@ -51,6 +51,31 @@ module whose dependencies are still C++ needs bridges for every one of them.
 
 [Choochmeque/autocxx]: https://github.com/Choochmeque/autocxx
 
+## Decisions
+
+Recorded so they aren't re-litigated without new information.
+
+- **Rust, not another language.**
+  - Zig was the main alternative. Zig can't import C++ headers either, so every
+    boundary would need a hand-written C ABI. Zig is also pre-1.0, with
+    breaking changes every release, and offers no memory-safety gain.
+  - Swift can import C++ headers directly, but can't catch C++ exceptions,
+    which Kakoune uses for ordinary error handling. Ladybird picked Swift for
+    the same kind of migration in 2024, then dropped it in February 2026 over
+    C++ interop problems and [moved to Rust][ladybird].
+  - Carbon and cppfront are still experimental; D and Nim have too small a
+    community.
+  - Rust is stable, has workable C++ interop tooling, and fish has shown that
+    an incremental port of a project like this succeeds.
+- **The Makefile stays in charge until Rust owns `main()`.** Cargo builds only
+  the Rust library.
+- **Not Zig's build system.** It was tried, and builds Kakoune unchanged and
+  cross-compiles easily. But it built about twice as slowly as `make` with the
+  system clang, ties the build to Zig's bundled clang and libc++ (no GCC), and
+  its build API changes every release.
+
+[ladybird]: https://ladybird.org/newsletter/2026-02-28/
+
 ## Phases
 
 ### Phase 0: build plumbing (done, 2026-10-13)
