@@ -18,7 +18,8 @@ err towards short commit messages (i.e. not including a body).
   enables assertions and runs the unit tests at startup.
 - `make test` runs the integration tests in `test/`, which need a UTF-8
   locale. `nix build` builds and runs them in a sandbox. The test format is
-  described in `test/README.asciidoc`.
+  described in `test/README.asciidoc`. `nix flake check` also runs
+  `cargo test`, with many more cases for the conformance tests.
 - Before calling a change done, run the tests in both debug and optimized
   builds, and when Rust changed, `cargo test`, `cargo clippy` and
   `cargo fmt --check`.

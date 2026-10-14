@@ -10,7 +10,8 @@ current status; conventions that apply to any change live in `AGENTS.md`.
 ## Goals
 
 - End with a Rust program that behaves identically to the C++ one, as judged
-  by the integration tests in `test/` plus the unit tests ported along the way.
+  by the integration tests in `test/`, the unit tests ported along the way,
+  and conformance tests against upstream (see below).
 - Never have a broken intermediate state: each step builds, passes the tests,
   and could be released.
 - Leave the result idiomatic Rust, not C++ transliterated into Rust. The core
@@ -48,6 +49,34 @@ module whose dependencies are still C++ needs bridges for every one of them.
 - **Crubit**: re-evaluate before phase 3. It currently only supports Bazel.
 
 [Choochmeque/autocxx]: https://github.com/Choochmeque/autocxx
+
+### Conformance testing
+
+The integration tests are black-box regression tests: they catch a port that
+breaks a feature, but rarely one that ranks a candidate differently or
+decodes a malformed byte differently. So each ported module is also tested
+against the C++ it replaced, on generated inputs.
+
+The oracle is upstream Kakoune at the commit this fork branched from, pinned
+as the `kakoune-upstream` flake input, so nothing has to be kept or copied
+here once a module's C++ is deleted. It serves at two levels:
+
+- **Modules.** `rust/reference` (crate `kakoune-reference`, a dev-dependency
+  of `kakoune`) compiles the upstream `.cc` files a module needs, with the
+  `Kakoune` namespace renamed so they link alongside the port, and exposes
+  them through cxx bridges. Property tests written with [Hegel] (`hegeltest`)
+  run both implementations in one process, with the real locale and libc, and
+  require identical results. They live in `rust/src/<module>/conformance.rs`
+  and stay after the C++ is gone.
+- **The whole program.** `packages.kakoune-upstream` builds upstream's `kak`.
+  Nothing uses it yet; it's the oracle for phase 3, where the redesigned core
+  has no C++ module with the same interface to compare against, so scripted
+  sessions must run through both binaries and their results be compared.
+
+`cargo test` runs the conformance tests with 10,000 random cases each (set in
+`rust/hegel.toml`); `nix flake check` runs 100,000 from a fixed seed.
+
+[Hegel]: https://docs.rs/hegeltest
 
 ## Phases
 
@@ -89,15 +118,17 @@ reason not to.
   C++ `locale_*` wrappers in `rust_bridge.hh` above it. Where C++ compares
   `char`s as codepoints or mixes byte and character counts, the Rust does the
   same, with a comment.
-- **Differential tests.** Before switching callers over, commit a temporary
-  C++ `UnitTest` next to the old implementation that runs both on generated
-  inputs (a seeded xorshift over tokens mixing ASCII, non-ASCII, invalid
-  UTF-8 and characters that matter to the module) and compares every result
-  field and every pairwise ordering. Bias generation so most inputs exercise
-  the interesting paths, check it catches a deliberately injected bug, run it
-  once with many more rounds and another seed, then delete it together with
-  the C++ implementation. It runs in Kakoune's process, so the locale and
-  libc are the real ones. `git show` the `ranked_match` one for a template.
+- **Conformance tests.** Before switching callers over, add the module's
+  upstream sources to `rust/reference` with a bridge that mirrors the port's
+  (glue can read private fields through explicit template instantiation, as
+  `ranked_match_glue.cc` does), and write Hegel tests comparing every result
+  field and, for orderings, every pair. Generate from tokens mixing ASCII,
+  non-ASCII, invalid UTF-8 and characters that matter to the module, plus
+  occasional arbitrary characters, which is how differences between the
+  locale and Rust's Unicode tables get found. Bias generation so most inputs
+  exercise the interesting paths and check with `HEGEL_STATISTICS=1` and
+  `tc.event` that they do. Then inject a few bugs, in the module and in the
+  helpers it uses, and make sure each is caught.
 - **Unit tests.** Port the C++ `UnitTest`s to Rust tests, and keep a small
   C++ `UnitTest` exercising the shim, so debug builds check the wiring.
 - **Errors.** Not settled yet: `ranked_match` can't fail. The first module
@@ -141,7 +172,10 @@ Decide at the start of the phase:
 - Whether to adopt autocxx for the C++ APIs that Rust code calls.
 
 Expect to port clusters of tightly coupled modules together rather than one
-file at a time.
+file at a time. Before the first of them lands, build whole-program
+conformance tests against `kakoune-upstream`: the integration tests plus
+generated key sequences on varied buffers, run through both binaries, with
+buffer contents, selections and UI output compared.
 
 ### Phase 4: Rust owns the program
 

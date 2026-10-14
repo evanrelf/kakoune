@@ -33,6 +33,13 @@ generated headers where the C++ build looks for them.
 
 ## Testing
 
+- `cargo test` needs `nix develop`, which points `KAKOUNE_UPSTREAM_SRC` at
+  upstream's source for `reference/`, and a UTF-8 locale.
+- Conformance tests (`src/<module>/conformance.rs`) use Hegel; the plan in
+  `RUST_MIGRATION.md` says how to write one. A failure prints a shrunk
+  counterexample, is saved under `.hegel/` and replayed first on the next
+  run. `HEGEL_TEST_CASES` overrides the case count in `hegel.toml`, and
+  `HEGEL_SEED` fixes the seed, e.g. to reproduce a `nix flake check` failure.
 - `cargo test` links only this crate and the generated glue, not Kakoune's
   object files. Rust tests can call C++ functions defined inline in headers,
   but anything defined in a `.cc` file fails to link. Test such code through
@@ -40,6 +47,21 @@ generated headers where the C++ build looks for them.
   tests instead.
 - C++ `UnitTest`s that call into Rust only run in debug builds, at startup. To
   check that one actually runs, make it fail on purpose once.
+
+## The reference crate
+
+`reference/` builds upstream's C++ for the conformance tests and is only a
+dev-dependency, so none of it reaches `libkakoune.a`.
+
+- Its `build.rs` compiles the upstream `.cc` files in `UPSTREAM_SOURCES`
+  with `-DKakoune=KakouneReference`, and without `KAK_DEBUG`, since
+  upstream's assertions would pull in most of the editor. Add whatever a
+  newly covered module needs; the linker names anything missing.
+- Each bridge module `src/<module>.rs` has its glue in
+  `src/<module>_glue.{hh,cc}`. The suffix keeps glue headers from shadowing
+  upstream ones, which glue includes by their upstream names.
+- Glue is written in `namespace Kakoune::reference`, which the rename turns
+  into `KakouneReference::reference` consistently on both sides.
 
 ## Dependencies
 
