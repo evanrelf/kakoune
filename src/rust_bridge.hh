@@ -4,14 +4,11 @@
 // C++ functions exposed to Rust through the `#[cxx::bridge]` modules in
 // rust/src. Signatures must only use types cxx understands.
 
-#include "unicode.hh"
-
 #include <cstdint>
+#include <cwctype>
 
 namespace Kakoune::rs
 {
-
-inline bool is_word(uint32_t c) { return Kakoune::is_word(c); }
 
 // The locale-dependent fallbacks unicode.hh uses above ASCII, with the same
 // conversions.
