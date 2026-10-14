@@ -83,6 +83,9 @@
             inputsFrom = [ config.packages.default ];
             packages = with pkgs; [
               clang-tools
+              clippy
+              rust-analyzer
+              rustfmt
             ];
           };
       };
