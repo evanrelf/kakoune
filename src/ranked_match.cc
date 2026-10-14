@@ -1,8 +1,13 @@
 #include "ranked_match.hh"
 
 #include "flags.hh"
+#include "file.hh"
+#include "format.hh"
+#include "kakoune/src/ranked_match.rs.h"
+#include "rust_interop.hh"
 #include "unit_tests.hh"
 #include "utf8_iterator.hh"
+#include "vector.hh"
 #include "optional.hh"
 #include "ranges.hh"
 #include "word_splitter.hh"
@@ -320,5 +325,110 @@ UnitTest test_used_letters{[]()
 {
     kak_assert(used_letters("abcd") == to_lower(used_letters("abcdABCD")));
 }};
+
+// Compares this implementation against the Rust one on generated inputs,
+// mixing ASCII, non-ASCII, invalid UTF-8 and characters that matter for
+// ranking.
+void differential_test_ranked_match()
+{
+    uint64_t state = 0x9E3779B97F4A7C15;
+    auto rand = [&](uint64_t n) {
+        state ^= state << 13; state ^= state >> 7; state ^= state << 17;
+        return state % n;
+    };
+
+    const StringView tokens[] = {
+        "a", "b", "c", "f", "o", "r", "x", "A", "B", "F", "O", "R",
+        "_", "-", "/", ".", "1", " ", "(", "foo", "bar", "Foo",
+        "é", "É", "ß", "ǅ", "ﬀ", "日", "😀", "\xC3", "\x80", "\xFF",
+        "\xE2\x82", "\xF0\x9F", "\xC3" "a", StringView{"\0", 1},
+    };
+    auto random_token = [&] { return tokens[rand(std::size(tokens))]; };
+
+    auto check = [](bool ok, StringView what, StringView candidate, StringView query) {
+        if (not ok)
+            write(2, format("ranked_match mismatch: {} for candidate '{}' and query '{}'\n",
+                            what, candidate, query));
+        kak_assert(ok);
+    };
+
+    auto rank_of = [](const RankedMatch& m) {
+        return rs::Rank{(uint8_t)m.m_flags, m.m_full_word_match_count,
+                        m.m_word_boundary_match_count, m.m_max_index,
+                        m.m_input_sequence_number};
+    };
+
+    for (int round = 0; round < 20000; ++round)
+    {
+        Vector<String> candidates;
+        for (int i = 0, count = 1 + rand(30); i < count; ++i)
+        {
+            String candidate;
+            for (int j = 0, len = rand(12); j < len; ++j)
+                candidate += random_token();
+            candidates.push_back(std::move(candidate));
+        }
+
+        // Half the queries are drawn from a candidate so that they match
+        String query;
+        if (rand(2) == 0)
+        {
+            for (int j = 0, len = 1 + rand(4); j < len; ++j)
+                query += random_token();
+        }
+        else
+        {
+            auto& source = candidates[rand(candidates.size())];
+            for (auto c : source)
+            {
+                if (rand(2) == 0)
+                    query += rand(4) == 0 ? to_upper(c) : c;
+            }
+        }
+
+        const UsedLetters query_letters = used_letters(query);
+        Vector<RankedMatch> ranked;
+        for (auto& candidate : candidates)
+        {
+            const UsedLetters candidate_letters = used_letters(candidate);
+            check(candidate_letters == rs::used_letters(to_rust_bytes(candidate)),
+                  "used_letters", candidate, query);
+
+            for (bool with_letters : {false, true})
+            {
+                RankedMatch m = with_letters ? RankedMatch{candidate, candidate_letters, query, query_letters}
+                                             : RankedMatch{candidate, query};
+                rs::Rank rank{};
+                const bool rs_matches = with_letters
+                    ? rs::ranked_match_with_letters(to_rust_bytes(candidate), candidate_letters,
+                                                    to_rust_bytes(query), query_letters, rank)
+                    : rs::ranked_match(to_rust_bytes(candidate), to_rust_bytes(query), rank);
+                check((bool)m == rs_matches, "matches", candidate, query);
+                if (not m)
+                    continue;
+                check(rank_of(m) == rank, "rank", candidate, query);
+                if (with_letters)
+                    continue;
+
+                // Few distinct sequence numbers, so ties still reach the
+                // candidate comparison
+                m.set_input_sequence_number(rand(3));
+                ranked.push_back(m);
+            }
+        }
+
+        for (auto& lhs : ranked)
+        {
+            for (auto& rhs : ranked)
+            {
+                check((lhs < rhs) == rs::ranked_match_less(to_rust_bytes(lhs.candidate()), rank_of(lhs),
+                                                           to_rust_bytes(rhs.candidate()), rank_of(rhs)),
+                      format("ordering against '{}'", rhs.candidate()), lhs.candidate(), query);
+            }
+        }
+    }
+}
+
+UnitTest test_ranked_match_differential{differential_test_ranked_match};
 
 }

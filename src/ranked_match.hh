@@ -34,6 +34,8 @@ struct RankedMatch
     void set_input_sequence_number(size_t i) { m_input_sequence_number = i; }
 
 private:
+    friend void differential_test_ranked_match();
+
     template<typename TestFunc>
     RankedMatch(StringView candidate, StringView query, TestFunc test);
 
