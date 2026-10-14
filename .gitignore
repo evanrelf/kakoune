@@ -19,3 +19,4 @@ GRTAGS
 GTAGS
 result
 result-*
+rust/target/

@@ -26,15 +26,32 @@
                 ./colors
                 ./doc
                 ./rc
+                ./rust/Cargo.lock
+                ./rust/Cargo.toml
+                ./rust/build.rs
+                ./rust/src
                 ./share
                 ./test
                 (lib.fileset.fileFilter (file: file.hasExt "cc" || file.hasExt "hh") ./src)
               ];
             };
 
+            cargoRoot = "rust";
+
+            cargoDeps = pkgs.rustPlatform.importCargoLock {
+              lockFile = ./rust/Cargo.lock;
+            };
+
+            nativeBuildInputs = [
+              pkgs.cargo
+              pkgs.rustPlatform.cargoSetupHook
+              pkgs.rustc
+            ];
+
             makeFlags = [
               "PREFIX=${placeholder "out"}"
               "version=${config.packages.default.version}"
+              "CARGOFLAGS=--frozen"
             ];
 
             enableParallelBuilding = true;
