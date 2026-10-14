@@ -103,6 +103,29 @@
 
         checks.default = config.packages.default;
 
+        checks.rust =
+          pkgs.stdenv.mkDerivation {
+            name = "kakoune-rust-tests";
+
+            inherit (config.packages.default) src cargoRoot cargoDeps nativeBuildInputs;
+
+            KAKOUNE_UPSTREAM_SRC = inputs.kakoune-upstream;
+            # Character classification tests need a UTF-8 locale
+            LC_ALL = "C.UTF-8";
+            # Far more cases than local runs, from a fixed seed so failures
+            # reproduce with the same variables
+            HEGEL_TEST_CASES = 100000;
+            HEGEL_SEED = 0;
+
+            buildPhase = ''
+              runHook preBuild
+              cargo test --manifest-path rust/Cargo.toml --workspace --frozen
+              runHook postBuild
+            '';
+
+            installPhase = "touch $out";
+          };
+
         devShells.default =
           pkgs.mkShell {
             inputsFrom = [ config.packages.default ];
