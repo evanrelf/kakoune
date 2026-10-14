@@ -59,29 +59,52 @@ module whose dependencies are still C++ needs bridges for every one of them.
 - `src/rust_bridge.hh` (C++ functions exposed to Rust) and
   `src/rust_interop.hh` (Kakoune ↔ cxx type conversions).
 - Nix vendors crates from `rust/Cargo.lock`; the dev shell has the Rust tools.
-- A smoke-test bridge (`rust/src/smoke_test.rs`, `src/rust_bridge.cc`)
-  exercising calls in both directions.
 
-### Phase 1: first real module
+### Phase 1: first real module (done, 2026-10-13)
 
-Port `ranked_match` (about 390 lines), the fuzzy matcher behind completion
-menus. It depends only on string and Unicode helpers, has its own unit tests,
-and has few callers (`completion.cc`, `commands.cc`, `word_db.cc`).
+Ported `ranked_match`, the fuzzy matcher behind completion menus, to
+`rust/src/ranked_match.rs`, along with the helpers it needs:
+`unicode.rs` and `utf8.rs` (mirroring `unicode.hh` and `utf8.hh`) and
+`word_splitter.rs`. The C++ `RankedMatch` class remains as a shim.
 
-- Keep the C++ `RankedMatch` class: `commands.cc` inherits from it. Its
-  constructors and `operator<` call into Rust; its private fields are filled
-  from a plain bridge struct.
-- Candidates and queries cross as bytes. `is_word`, `to_lower` and `is_upper`
-  must give the same answers as `src/unicode.hh`, so call back into the C++ or
-  the same libc functions.
-- Port the `UnitTest` block to Rust tests, and add a differential test that
-  runs the old C++ and new Rust implementations on generated inputs and
-  requires identical results and ordering, before deleting the C++.
-- Delete the smoke test.
+### Patterns for porting a module
 
-Phase 1 is where the patterns for later ports get settled: how shims look,
-how errors cross, and how differential tests are structured. Write them down
-in this document once they're settled.
+These were settled by `ranked_match`; follow them unless a module gives a
+reason not to.
+
+- **Shims.** Keep the C++ class and header so callers don't change. Its
+  methods convert arguments and call Rust; state Rust computes comes back in
+  a cxx shared struct (`rs::Rank`) that the shim copies into its existing
+  fields. Headers included widely forward-declare the shared struct
+  (`namespace rs { struct Rank; }`) rather than including the generated
+  header, so only the shim's `.cc` needs a Makefile dependency on the Rust
+  library.
+- **Rust API.** Write the idiomatic Rust type first (`RankedMatch<'a>` with
+  `Option`-returning constructors and an `Ordering`-returning comparison),
+  then thin `extern "Rust"` functions over it. cxx can't return `Option`, so
+  bridge functions return `bool` and fill a `&mut` out-parameter.
+- **Faithful helpers.** `utf8.rs` decodes invalid UTF-8 to the same values
+  as the C++, including sign-extending bytes wherever `char` is signed
+  (`char_to_codepoint`). `unicode.rs` classifies ASCII in Rust and calls the
+  C++ `locale_*` wrappers in `rust_bridge.hh` above it. Where C++ compares
+  `char`s as codepoints or mixes byte and character counts, the Rust does the
+  same, with a comment.
+- **Differential tests.** Before switching callers over, commit a temporary
+  C++ `UnitTest` next to the old implementation that runs both on generated
+  inputs (a seeded xorshift over tokens mixing ASCII, non-ASCII, invalid
+  UTF-8 and characters that matter to the module) and compares every result
+  field and every pairwise ordering. Bias generation so most inputs exercise
+  the interesting paths, check it catches a deliberately injected bug, run it
+  once with many more rounds and another seed, then delete it together with
+  the C++ implementation. It runs in Kakoune's process, so the locale and
+  libc are the real ones. `git show` the `ranked_match` one for a template.
+- **Unit tests.** Port the C++ `UnitTest`s to Rust tests, and keep a small
+  C++ `UnitTest` exercising the shim, so debug builds check the wiring.
+- **Errors.** Not settled yet: `ranked_match` can't fail. The first module
+  that throws (likely `parameters_parser` or `keys`) decides how
+  `runtime_error`s cross; cxx's `Result` support converts Rust errors into
+  `rust::Error` exceptions, which Kakoune's handlers won't catch, so
+  shims will need to catch and rethrow.
 
 ### Phase 2: more self-contained modules
 
@@ -144,4 +167,4 @@ file at a time.
 | Module | Status |
 | --- | --- |
 | Build plumbing | Done |
-| `ranked_match` | Not started |
+| `ranked_match` | Done |
