@@ -17,3 +17,5 @@ tags
 GPATH
 GRTAGS
 GTAGS
+.zig-cache/
+zig-out/
