@@ -1,434 +1,64 @@
 #include "ranked_match.hh"
 
-#include "flags.hh"
-#include "file.hh"
-#include "format.hh"
 #include "kakoune/src/ranked_match.rs.h"
 #include "rust_interop.hh"
 #include "unit_tests.hh"
-#include "utf8_iterator.hh"
-#include "vector.hh"
-#include "optional.hh"
-#include "ranges.hh"
-#include "word_splitter.hh"
-
-#include <algorithm>
 
 namespace Kakoune
 {
 
 UsedLetters used_letters(StringView str)
 {
-    UsedLetters res = 0;
-    for (auto c : str)
-    {
-        if (c >= 'a' and c <= 'z')
-            res |= 1uLL << (c - 'a');
-        else if (c >= 'A' and c <= 'Z')
-            res |= 1uLL << (c - 'A' + 26);
-        else if (c == '_')
-            res |= 1uLL << 53;
-        else if (c == '-')
-            res |= 1uLL << 54;
-        else
-            res |= 1uLL << 63;
-    }
-    return res;
+    return rs::used_letters(to_rust_bytes(str));
 }
 
-bool matches(UsedLetters query, UsedLetters letters)
+RankedMatch::RankedMatch(StringView candidate, StringView query)
 {
-    return (query & letters) == query;
-}
-
-using Utf8It = utf8::iterator<const char*>;
-
-static int count_word_boundaries_match(StringView candidate, StringView query)
-{
-    int count = 0;
-    Utf8It query_it{query.begin(), query};
-    Codepoint prev = 0;
-    for (Utf8It it{candidate.begin(), candidate}; it != candidate.end(); ++it)
-    {
-        const Codepoint c = *it;
-        const bool is_word_boundary = prev == 0 or
-                                      (not is_word(prev, {}) and is_word(c, {})) or
-                                      (is_lower(prev) and is_upper(c));
-        prev = c;
-
-        if (not is_word_boundary)
-            continue;
-
-        const Codepoint lc = to_lower(c);
-        for (auto qit = query_it; qit != query.end(); ++qit)
-        {
-            const Codepoint qc = *qit;
-            if (qc == (is_lower(qc) ? lc  : c))
-            {
-                ++count;
-                query_it = qit+1;
-                break;
-            }
-        }
-        if (query_it == query.end())
-            break;
-    }
-    return count;
-}
-
-static int count_full_word_match(StringView candidate, StringView query)
-{
-    int count = 0;
-    WordSplitter query_words{query, {}};
-    WordSplitter candidate_words{candidate, {}};
-    for (auto query_word : query_words)
-    {
-        for (auto word : candidate_words)
-        {
-            if (word == query_word)
-            {
-                ++count;
-                break;
-            }
-        }
-    }
-    return count;
-}
-
-static bool smartcase_eq(Codepoint candidate, Codepoint query)
-{
-    return query == (is_lower(query) ? to_lower(candidate) : candidate);
-}
-
-struct SubseqRes
-{
-    int max_index;
-    bool single_word;
-};
-
-static Optional<SubseqRes> subsequence_match_smart_case(StringView str, StringView subseq)
-{
-    bool single_word = true;
-    int max_index = -1;
-    auto it = str.begin();
-    int index = 0;
-    for (auto subseq_it = subseq.begin(); subseq_it != subseq.end();)
-    {
-        if (it == str.end())
-            return {};
-        const Codepoint c = utf8::read_codepoint(subseq_it, subseq.end());
-        if (single_word and not is_word(c))
-            single_word = false;
-        while (true)
-        {
-            auto str_c = utf8::read_codepoint(it, str.end());
-            if (smartcase_eq(str_c, c))
-                break;
-
-            if (max_index != -1 and single_word and not is_word(str_c))
-                single_word = false;
-
-            ++index;
-            if (it == str.end())
-                return {};
-        }
-        max_index = index++;
-    }
-    return SubseqRes{max_index, single_word};
-}
-
-template<typename TestFunc>
-RankedMatch::RankedMatch(StringView candidate, StringView query, TestFunc func)
-{
-    if (query.length() > candidate.length())
-        return;
-
-    if (query.empty())
-    {
-        m_candidate = candidate;
-        m_matches = true;
-        return;
-    }
-
-    if (not func())
-        return;
-
-    auto res = subsequence_match_smart_case(candidate, query);
-    if (not res)
-        return;
-
-    m_candidate = candidate;
-    m_matches = true;
-    m_max_index = res->max_index;
-
-    if (res->single_word)
-        m_flags |= Flags::SingleWord;
-
-    if (auto it = find(candidate | reverse() | skip(1), '/').base();
-        it == candidate.begin() or subsequence_match_smart_case({it, candidate.end()}, query))
-    {
-        m_flags |= Flags::BaseName;
-        if ((candidate.end() - it) >= query.length() and
-            std::equal(Utf8It{query.begin(), query}, Utf8It{query.end(), query}, Utf8It{it, candidate},
-                       [](Codepoint query, Codepoint candidate) { return smartcase_eq(candidate, query); }))
-            m_flags |= Flags::Prefix;
-    }
-
-    auto it = std::search(candidate.begin(), candidate.end(),
-                          query.begin(), query.end(), smartcase_eq);
-    if (it != candidate.end())
-    {
-        m_flags |= Flags::Contiguous;
-        if (std::all_of(Utf8It{query.begin(), query}, Utf8It{query.end(), query}, [](auto cp) { return is_word(cp); }))
-            m_flags |= Flags::SingleWord;
-        if (it == candidate.begin())
-        {
-            m_flags |= Flags::Prefix;
-            if (query.length() == candidate.length())
-            {
-                m_flags |= Flags::SmartFullMatch;
-                if (candidate == query)
-                    m_flags |= Flags::FullMatch;
-            }
-        }
-    }
-
-    m_full_word_match_count = count_full_word_match(candidate, query);
-    m_word_boundary_match_count = count_word_boundaries_match(candidate, query);
-    if (m_word_boundary_match_count == query.length())
-        m_flags |= Flags::OnlyWordBoundary;
+    rs::Rank rank{};
+    if (rs::ranked_match(to_rust_bytes(candidate), to_rust_bytes(query), rank))
+        set_rank(candidate, rank);
 }
 
 RankedMatch::RankedMatch(StringView candidate, UsedLetters candidate_letters,
                          StringView query, UsedLetters query_letters)
-    : RankedMatch{candidate, query, [&] {
-        return matches(to_lower(query_letters), to_lower(candidate_letters)) and
-               matches(query_letters & upper_mask, candidate_letters & upper_mask);
-    }} {}
-
-
-RankedMatch::RankedMatch(StringView candidate, StringView query)
-    : RankedMatch{candidate, query, [] { return true; }}
 {
+    rs::Rank rank{};
+    if (rs::ranked_match_with_letters(to_rust_bytes(candidate), candidate_letters,
+                                      to_rust_bytes(query), query_letters, rank))
+        set_rank(candidate, rank);
 }
 
-static bool is_word_boundary(Codepoint prev, Codepoint c)
+void RankedMatch::set_rank(StringView candidate, const rs::Rank& rank)
 {
-    return (is_word(prev, {})) != is_word(c, {}) or
-           (is_lower(prev) != is_lower(c));
+    m_candidate = candidate;
+    m_matches = true;
+    m_flags = rank.flags;
+    m_full_word_match_count = rank.full_word_match_count;
+    m_word_boundary_match_count = rank.word_boundary_match_count;
+    m_max_index = rank.max_index;
+    m_input_sequence_number = rank.input_sequence_number;
+}
+
+rs::Rank RankedMatch::rank() const
+{
+    return {m_flags, m_full_word_match_count, m_word_boundary_match_count,
+            m_max_index, m_input_sequence_number};
 }
 
 bool RankedMatch::operator<(const RankedMatch& other) const
 {
     kak_assert((bool)*this and (bool)other);
-
-    const auto diff = m_flags ^ other.m_flags;
-    // flags are different, use their ordering to return the first match
-    if (diff != Flags::None)
-        return (int)(m_flags & diff) > (int)(other.m_flags & diff);
-
-    // If we are SingleWord, we dont want to take word boundaries from other
-    // words into account.
-    if (not (m_flags & (Flags::Prefix | Flags::SingleWord)) and
-        m_word_boundary_match_count != other.m_word_boundary_match_count)
-        return m_word_boundary_match_count > other.m_word_boundary_match_count;
-
-    if (m_full_word_match_count != other.m_full_word_match_count)
-        return m_full_word_match_count > other.m_full_word_match_count;
-
-    if (m_max_index != other.m_max_index)
-        return m_max_index < other.m_max_index;
-
-    if (m_input_sequence_number != other.m_input_sequence_number)
-        return m_input_sequence_number < other.m_input_sequence_number;
-
-    // Reorder codepoints to improve matching behaviour
-    auto order = [](Codepoint cp) { return cp == '/' ? 0 : cp; };
-
-    auto it1 = m_candidate.begin(), it2 = other.m_candidate.begin();
-    const auto begin1 = it1, begin2 = it2;
-    const auto end1 = m_candidate.end(), end2 = other.m_candidate.end();
-    auto last1 = it1, last2 = it2;
-    while (true)
-    {
-        // find next mismatch
-        while (it1 != end1 and it2 != end2 and *it1 == *it2)
-            ++it1, ++it2;
-
-        if (it1 == end1 or it2 == end2)
-            return it1 == end1 and it2 != end2;
-
-        // compare codepoints
-        it1 = utf8::character_start(it1, last1);
-        it2 = utf8::character_start(it2, last2);
-        const auto itsave1 = it1, itsave2 = it2;
-        const auto cp1 = utf8::read_codepoint(it1, end1);
-        const auto cp2 = utf8::read_codepoint(it2, end2);
-        if (cp1 != cp2)
-        {
-            const auto cplast1 = utf8::prev_codepoint(itsave1, begin1);
-            const auto cplast2 = utf8::prev_codepoint(itsave2, begin2);
-            const bool is_wb1 = is_word_boundary(cplast1, cp1);
-            const bool is_wb2 = is_word_boundary(cplast2, cp2);
-            if (is_wb1 != is_wb2)
-                return is_wb1;
-
-            const bool low1 = is_lower(cp1);
-            const bool low2 = is_lower(cp2);
-            if (low1 != low2)
-                return low1;
-
-            return order(cp1) < order(cp2);
-        }
-        last1 = it1; last2 = it2;
-    }
+    return rs::ranked_match_less(to_rust_bytes(m_candidate), rank(),
+                                 to_rust_bytes(other.m_candidate), other.rank());
 }
 
+// The matching and ranking tests are in Rust; this checks the shim.
 UnitTest test_ranked_match{[] {
-    auto preferred = [](StringView query, StringView better, StringView worse) {
-        return RankedMatch{better, query} < RankedMatch{worse, query};
-    };
-
-    kak_assert(count_word_boundaries_match("run_all_tests", "rat") == 3);
-    kak_assert(count_word_boundaries_match("run_all_tests", "at") == 2);
-    kak_assert(count_word_boundaries_match("countWordBoundariesMatch", "wm") == 2);
-    kak_assert(count_word_boundaries_match("countWordBoundariesMatch", "cobm") == 3);
-    kak_assert(count_word_boundaries_match("countWordBoundariesMatch", "cWBM") == 4);
-    kak_assert(preferred("so", "source", "source_data"));
-    kak_assert(not preferred("so", "source_data", "source"));
-    kak_assert(not preferred("so", "source", "source"));
-    kak_assert(preferred("wo", "single/word", "multiw/ord"));
-    kak_assert(preferred("foobar", "foo/bar/foobar", "foo/bar/baz"));
-    kak_assert(preferred("db", "delete-buffer", "debug"));
-    kak_assert(preferred("ct", "create_task", "constructor"));
-    kak_assert(preferred("cla", "class", "class::attr"));
-    kak_assert(preferred("meta", "meta/", "meta-a/"));
-    kak_assert(preferred("find", "find(1p)", "findfs(8)"));
-    kak_assert(preferred("fin", "find(1p)", "findfs(8)"));
-    kak_assert(preferred("sys_find", "sys_find(1p)", "sys_findfs(8)"));
-    kak_assert(preferred("", "init", "__init__"));
-    kak_assert(preferred("ini", "init", "__init__"));
-    kak_assert(preferred("", "a", "b"));
-    kak_assert(preferred("expresins", "expresions", "expressionism's"));
-    kak_assert(preferred("foo_b", "foo/bar/foo_bar.baz", "test/test_foo_bar.baz"));
-    kak_assert(preferred("foo_b", "bar/bar_qux/foo_bar.baz", "foo/test_foo_bar.baz"));
-    kak_assert(preferred("foo_bar", "bar/foo_bar.baz", "foo_bar/qux.baz"));
-    kak_assert(preferred("fb", "foo_bar/", "foo.bar"));
-    kak_assert(preferred("foo_bar", "test_foo_bar", "foo_test_bar"));
-    kak_assert(preferred("rm.cc", "src/ranked_match.cc", "test/README.asciidoc"));
-    kak_assert(preferred("luaremote", "src/script/LuaRemote.cpp", "tests/TestLuaRemote.cpp"));
-    kak_assert(preferred("lang/haystack/needle.c", "git.evilcorp.com/language/haystack/aaa/needle.c", "git.evilcorp.com/aaa/ng/wrong-haystack/needle.cpp"));
-    kak_assert(preferred("evilcorp-lint/bar.go", "scripts/evilcorp-lint/foo/bar.go", "src/evilcorp-client/foo/bar.go"));
+    kak_assert(RankedMatch{"source", "so"} < RankedMatch{"source_data", "so"});
+    kak_assert(not (RankedMatch{"source_data", "so"} < RankedMatch{"source", "so"}));
+    kak_assert(not RankedMatch{"source", "x"});
+    kak_assert(RankedMatch{"FooBar", used_letters("FooBar"), "fb", used_letters("fb")});
+    kak_assert(not RankedMatch{"foobar", used_letters("foobar"), "FB", used_letters("FB")});
 }};
-
-UnitTest test_used_letters{[]()
-{
-    kak_assert(used_letters("abcd") == to_lower(used_letters("abcdABCD")));
-}};
-
-// Compares this implementation against the Rust one on generated inputs,
-// mixing ASCII, non-ASCII, invalid UTF-8 and characters that matter for
-// ranking.
-void differential_test_ranked_match()
-{
-    uint64_t state = 0x9E3779B97F4A7C15;
-    auto rand = [&](uint64_t n) {
-        state ^= state << 13; state ^= state >> 7; state ^= state << 17;
-        return state % n;
-    };
-
-    const StringView tokens[] = {
-        "a", "b", "c", "f", "o", "r", "x", "A", "B", "F", "O", "R",
-        "_", "-", "/", ".", "1", " ", "(", "foo", "bar", "Foo",
-        "é", "É", "ß", "ǅ", "ﬀ", "日", "😀", "\xC3", "\x80", "\xFF",
-        "\xE2\x82", "\xF0\x9F", "\xC3" "a", StringView{"\0", 1},
-    };
-    auto random_token = [&] { return tokens[rand(std::size(tokens))]; };
-
-    auto check = [](bool ok, StringView what, StringView candidate, StringView query) {
-        if (not ok)
-            write(2, format("ranked_match mismatch: {} for candidate '{}' and query '{}'\n",
-                            what, candidate, query));
-        kak_assert(ok);
-    };
-
-    auto rank_of = [](const RankedMatch& m) {
-        return rs::Rank{(uint8_t)m.m_flags, m.m_full_word_match_count,
-                        m.m_word_boundary_match_count, m.m_max_index,
-                        m.m_input_sequence_number};
-    };
-
-    for (int round = 0; round < 20000; ++round)
-    {
-        Vector<String> candidates;
-        for (int i = 0, count = 1 + rand(30); i < count; ++i)
-        {
-            String candidate;
-            for (int j = 0, len = rand(12); j < len; ++j)
-                candidate += random_token();
-            candidates.push_back(std::move(candidate));
-        }
-
-        // Half the queries are drawn from a candidate so that they match
-        String query;
-        if (rand(2) == 0)
-        {
-            for (int j = 0, len = 1 + rand(4); j < len; ++j)
-                query += random_token();
-        }
-        else
-        {
-            auto& source = candidates[rand(candidates.size())];
-            for (auto c : source)
-            {
-                if (rand(2) == 0)
-                    query += rand(4) == 0 ? to_upper(c) : c;
-            }
-        }
-
-        const UsedLetters query_letters = used_letters(query);
-        Vector<RankedMatch> ranked;
-        for (auto& candidate : candidates)
-        {
-            const UsedLetters candidate_letters = used_letters(candidate);
-            check(candidate_letters == rs::used_letters(to_rust_bytes(candidate)),
-                  "used_letters", candidate, query);
-
-            for (bool with_letters : {false, true})
-            {
-                RankedMatch m = with_letters ? RankedMatch{candidate, candidate_letters, query, query_letters}
-                                             : RankedMatch{candidate, query};
-                rs::Rank rank{};
-                const bool rs_matches = with_letters
-                    ? rs::ranked_match_with_letters(to_rust_bytes(candidate), candidate_letters,
-                                                    to_rust_bytes(query), query_letters, rank)
-                    : rs::ranked_match(to_rust_bytes(candidate), to_rust_bytes(query), rank);
-                check((bool)m == rs_matches, "matches", candidate, query);
-                if (not m)
-                    continue;
-                check(rank_of(m) == rank, "rank", candidate, query);
-                if (with_letters)
-                    continue;
-
-                // Few distinct sequence numbers, so ties still reach the
-                // candidate comparison
-                m.set_input_sequence_number(rand(3));
-                ranked.push_back(m);
-            }
-        }
-
-        for (auto& lhs : ranked)
-        {
-            for (auto& rhs : ranked)
-            {
-                check((lhs < rhs) == rs::ranked_match_less(to_rust_bytes(lhs.candidate()), rank_of(lhs),
-                                                           to_rust_bytes(rhs.candidate()), rank_of(rhs)),
-                      format("ordering against '{}'", rhs.candidate()), lhs.candidate(), query);
-            }
-        }
-    }
-}
-
-UnitTest test_ranked_match_differential{differential_test_ranked_match};
 
 }

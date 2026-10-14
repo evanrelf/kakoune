@@ -2,23 +2,18 @@
 #define ranked_match_hh_INCLUDED
 
 #include "string.hh"
-#include "meta.hh"
 
 #include <cstdint>
 
 namespace Kakoune
 {
 
+namespace rs { struct Rank; }
+
 using UsedLetters = uint64_t;
 UsedLetters used_letters(StringView str);
 
-constexpr UsedLetters upper_mask = 0xFFFFFFC000000;
-
-inline UsedLetters to_lower(UsedLetters letters)
-{
-    return ((letters & upper_mask) >> 26) | (letters & (~upper_mask));
-}
-
+// Matching and ranking are implemented in rust/src/ranked_match.rs
 struct RankedMatch
 {
     RankedMatch(StringView candidate, StringView query);
@@ -34,28 +29,12 @@ struct RankedMatch
     void set_input_sequence_number(size_t i) { m_input_sequence_number = i; }
 
 private:
-    friend void differential_test_ranked_match();
-
-    template<typename TestFunc>
-    RankedMatch(StringView candidate, StringView query, TestFunc test);
-
-    enum class Flags : int
-    {
-        None = 0,
-        // Order is important, the highest bit has precedence for comparison
-        SingleWord       = 1 << 0,
-        Contiguous       = 1 << 1,
-        OnlyWordBoundary = 1 << 2,
-        Prefix           = 1 << 3,
-        BaseName         = 1 << 4,
-        SmartFullMatch   = 1 << 5,
-        FullMatch        = 1 << 6,
-    };
-    friend constexpr bool with_bit_ops(Meta::Type<Flags>) { return true; }
+    void set_rank(StringView candidate, const rs::Rank& rank);
+    rs::Rank rank() const;
 
     StringView m_candidate{};
     bool m_matches = false;
-    Flags m_flags = Flags::None;
+    uint8_t m_flags = 0;
     int m_full_word_match_count = 0;
     int m_word_boundary_match_count = 0;
     int m_max_index = 0;
