@@ -20,3 +20,4 @@ GTAGS
 result
 result-*
 rust/target/
+.hegel/

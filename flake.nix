@@ -35,6 +35,7 @@
                 ./rust/Cargo.lock
                 ./rust/Cargo.toml
                 ./rust/build.rs
+                ./rust/hegel.toml
                 ./rust/reference
                 ./rust/src
                 ./share

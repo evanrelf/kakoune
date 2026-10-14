@@ -1,0 +1,4 @@
+# The conformance tests need many cases to reach rare inputs, such as
+# characters the locale and the port classify differently
+[profiles.development]
+test_cases = 10000

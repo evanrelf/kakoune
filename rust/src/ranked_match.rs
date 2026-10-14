@@ -374,6 +374,9 @@ fn ranked_match_less(lhs_candidate: &[u8], lhs: &Rank, rhs_candidate: &[u8], rhs
 }
 
 #[cfg(test)]
+mod conformance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
