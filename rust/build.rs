@@ -1,7 +1,7 @@
 use std::{env, fs, io, path::Path};
 
 /// Modules containing a `#[cxx::bridge]`.
-const BRIDGES: &[&str] = &["src/smoke_test.rs"];
+const BRIDGES: &[&str] = &["src/ranked_match.rs", "src/smoke_test.rs", "src/unicode.rs"];
 
 fn main() {
     let debug = env::var("PROFILE").unwrap() == "debug";
