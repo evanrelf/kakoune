@@ -1,0 +1,11 @@
+[package]
+name = "kakoune-reference"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+cxx = "1.0.205"
+
+[build-dependencies]
+cxx-build = "1.0.205"

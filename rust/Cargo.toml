@@ -13,3 +13,9 @@ cxx = "1.0.205"
 
 [build-dependencies]
 cxx-build = "1.0.205"
+
+[dev-dependencies]
+kakoune-reference = { path = "reference" }
+
+[workspace]
+members = ["reference"]

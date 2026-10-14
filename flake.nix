@@ -35,6 +35,7 @@
                 ./rust/Cargo.lock
                 ./rust/Cargo.toml
                 ./rust/build.rs
+                ./rust/reference
                 ./rust/src
                 ./share
                 ./test
@@ -110,6 +111,8 @@
               rust-analyzer
               rustfmt
             ];
+            # For `rust/reference`
+            KAKOUNE_UPSTREAM_SRC = inputs.kakoune-upstream;
           };
       };
     };
