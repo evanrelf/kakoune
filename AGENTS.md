@@ -1,7 +1,9 @@
 # AGENTS.md
 
 This is a fork of Kakoune, a modal text editor written in C++, that is being
-incrementally ported to Rust.
+incrementally ported to Rust. `RUST_MIGRATION.md` has the plan, its status
+and the decisions behind it; read it before working on the port, and update it
+as the plan changes.
 
 In this project, you are explicitly allowed to use version control tools and
 author commits yourself. You are encouraged to make commits often. Break your
@@ -15,7 +17,8 @@ err towards short commit messages (i.e. not including a body).
 - `make` builds `src/kak`; `make debug=yes` builds with `KAK_DEBUG`, which
   enables assertions and runs the unit tests at startup.
 - `make test` runs the integration tests in `test/`, which need a UTF-8
-  locale. `nix build` builds and runs them in a sandbox.
+  locale. `nix build` builds and runs them in a sandbox. The test format is
+  described in `test/README.asciidoc`.
 - Before calling a change done, run the tests in both debug and optimized
   builds, and when Rust changed, `cargo test`, `cargo clippy` and
   `cargo fmt --check`.
