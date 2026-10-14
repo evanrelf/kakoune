@@ -28,19 +28,10 @@ err towards short commit messages (i.e. not including a body).
 - Nix flakes only see tracked files.
 - The CI configs are inherited from upstream and unused; ignore them.
 
-## C++ conventions
+## Naming
 
-Match the surrounding code:
-
-- Code lives in `namespace Kakoune`. Braces go on their own line; indent with
-  four spaces. Prefer `and`, `or` and `not` over `&&`, `||` and `!`.
-- Use Kakoune's own types (`String`, `StringView`, `Vector`, `HashMap`,
-  `RefPtr` and friends) rather than their `std` equivalents.
-- Errors are reported by throwing `Kakoune::runtime_error` and its subclasses,
-  which do not derive from `std::exception`.
-- Unit tests are `UnitTest` objects at the bottom of the `.cc` file they test.
-- "Kakoune" is the project, namespace and crate name; `kak` refers only to the
-  binary.
+"Kakoune" is the project, namespace and crate name; `kak` refers only to the
+binary.
 
 ## The Rust port
 
