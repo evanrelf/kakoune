@@ -196,7 +196,7 @@ pub fn try_format(fmt: &[u8], params: &[&[u8]]) -> Result<Vec<u8>> {
 pub fn format(fmt: &[u8], params: &[&[u8]]) -> Vec<u8> {
     match try_format(fmt, params) {
         Ok(r) => r,
-        Err(e) => panic!("invalid format string {:?}: {}", bstr::BStr::new(fmt), e),
+        Err(e) => panic!("invalid format string {:?}: {}", String::from_utf8_lossy(fmt), e),
     }
 }
 

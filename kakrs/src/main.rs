@@ -5,10 +5,49 @@
 pub mod format;
 #[macro_use]
 pub mod exception;
+#[macro_use]
+pub mod flags;
+#[macro_use]
+pub mod option_types;
+
+pub mod alias_registry;
+pub mod buffer;
+pub mod buffer_manager;
+pub mod buffer_utils;
+pub mod changes;
+pub mod client;
+pub mod client_manager;
+pub mod command_manager;
+pub mod completion;
+pub mod context;
+pub mod debug;
+pub mod diff;
+pub mod display_buffer;
+pub mod event_manager;
+pub mod face;
+pub mod file;
+pub mod highlighter;
+pub mod highlighter_group;
+pub mod hook_manager;
+pub mod input_handler;
+pub mod keymap_manager;
+pub mod keys;
+pub mod option_manager;
+pub mod parameters_parser;
+pub mod ranked_match;
+pub mod regex;
+pub mod regex_vm;
+pub mod register_manager;
+pub mod scope;
+pub mod selection;
 pub mod string_utils;
 pub mod unicode;
 pub mod units;
+pub mod user_interface;
 pub mod utf8;
+pub mod utils;
+pub mod value;
+pub mod window;
 
 fn main() {
     println!("Hello, world!");

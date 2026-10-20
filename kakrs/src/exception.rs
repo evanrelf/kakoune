@@ -4,7 +4,6 @@
 //! distinguishing the various runtime_error subclasses that are caught
 //! specifically somewhere.
 
-use bstr::ByteSlice;
 use std::fmt;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,13 +75,13 @@ impl Error {
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Error({:?}, {:?})", self.kind, self.what.as_bstr())
+        write!(f, "Error({:?}, {:?})", self.kind, String::from_utf8_lossy(&self.what))
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.what.as_bstr())
+        write!(f, "{}", String::from_utf8_lossy(&self.what))
     }
 }
 

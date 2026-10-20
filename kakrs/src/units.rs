@@ -90,50 +90,58 @@ impl std::ops::SubAssign for DisplayCoord {
 }
 
 /// A BufferCoord with a preferred display column, used for vertical movement.
-/// Comparison and equality only consider line and column, as in the C++ code
-/// where it derives from BufferCoord.
+/// Mirrors the C++ subclass: it derefs to its BufferCoord, and comparison and
+/// equality only consider the coordinate.
 #[derive(Clone, Copy, Debug)]
 pub struct BufferCoordAndTarget {
-    pub line: LineCount,
-    pub column: ByteCount,
+    pub coord: BufferCoord,
     pub target: ColumnCount,
     pub display_target: ColumnCount,
 }
 
 impl Default for BufferCoordAndTarget {
     fn default() -> Self {
-        BufferCoordAndTarget { line: 0, column: 0, target: -1, display_target: -1 }
+        BufferCoordAndTarget { coord: BufferCoord::default(), target: -1, display_target: -1 }
     }
 }
 
 impl BufferCoordAndTarget {
     pub const fn new(coord: BufferCoord, target: ColumnCount, display_target: ColumnCount) -> Self {
-        BufferCoordAndTarget { line: coord.line, column: coord.column, target, display_target }
+        BufferCoordAndTarget { coord, target, display_target }
     }
     pub const fn coord(&self) -> BufferCoord {
-        BufferCoord { line: self.line, column: self.column }
+        self.coord
     }
-    pub fn set_coord(&mut self, c: BufferCoord) {
-        self.line = c.line;
-        self.column = c.column;
+}
+
+impl std::ops::Deref for BufferCoordAndTarget {
+    type Target = BufferCoord;
+    fn deref(&self) -> &BufferCoord {
+        &self.coord
+    }
+}
+
+impl std::ops::DerefMut for BufferCoordAndTarget {
+    fn deref_mut(&mut self) -> &mut BufferCoord {
+        &mut self.coord
     }
 }
 
 impl From<BufferCoord> for BufferCoordAndTarget {
     fn from(c: BufferCoord) -> Self {
-        BufferCoordAndTarget { line: c.line, column: c.column, target: -1, display_target: -1 }
+        BufferCoordAndTarget { coord: c, target: -1, display_target: -1 }
     }
 }
 
 impl From<BufferCoordAndTarget> for BufferCoord {
     fn from(c: BufferCoordAndTarget) -> Self {
-        c.coord()
+        c.coord
     }
 }
 
 impl PartialEq for BufferCoordAndTarget {
     fn eq(&self, o: &Self) -> bool {
-        self.coord() == o.coord()
+        self.coord == o.coord
     }
 }
 
@@ -147,7 +155,7 @@ impl PartialOrd for BufferCoordAndTarget {
 
 impl Ord for BufferCoordAndTarget {
     fn cmp(&self, o: &Self) -> std::cmp::Ordering {
-        self.coord().cmp(&o.coord())
+        self.coord.cmp(&o.coord)
     }
 }
 
