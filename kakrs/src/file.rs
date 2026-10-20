@@ -594,4 +594,71 @@ mod tests {
         assert_eq!(split_path(b"foo/bar"), (&b"foo/"[..], &b"bar"[..]));
         assert_eq!(split_path(b"bar"), (&b""[..], &b"bar"[..]));
     }
+
+    use hegel::generators as gs;
+    use hegel::TestCase;
+
+    fn path() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(gs::binary(), gs::vecs(gs::sampled_from(b"a/.~%".to_vec())))
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn split_path_splits_after_last_slash(tc: TestCase) {
+        let p = tc.draw(path());
+        let (dir, file) = split_path(&p);
+        assert_eq!([dir, file].concat(), p);
+        assert!(!file.contains(&b'/'));
+        assert!(dir.is_empty() || dir.ends_with(b"/"));
+    }
+
+    /// Reference MurmurHash3_x86_32, seeded as Kakoune does
+    fn murmur3_reference(data: &[u8]) -> u32 {
+        const C1: u32 = 0xcc9e2d51;
+        const C2: u32 = 0x1b873593;
+        let mix = |k: u32| k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
+        let mut h: u32 = 0x1235678;
+        let chunks = data.chunks_exact(4);
+        let tail = chunks.remainder();
+        for c in chunks {
+            h ^= mix(u32::from_le_bytes(c.try_into().unwrap()));
+            h = h.rotate_left(13).wrapping_mul(5).wrapping_add(0xe6546b64);
+        }
+        if !tail.is_empty() {
+            let k = tail.iter().rev().fold(0u32, |k, &b| (k << 8) | b as u32);
+            h ^= mix(k);
+        }
+        h ^= data.len() as u32;
+        h ^= h >> 16;
+        h = h.wrapping_mul(0x85ebca6b);
+        h ^= h >> 13;
+        h = h.wrapping_mul(0xc2b2ae35);
+        h ^ (h >> 16)
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn murmur3_matches_reference(tc: TestCase) {
+        let data = tc.draw(gs::binary());
+        assert_eq!(murmur3(&data), murmur3_reference(&data) as usize);
+    }
+
+    #[test]
+    fn murmur3_known_values() {
+        // from the C++ unit tests
+        assert_eq!(murmur3(b"Hello, World!"), 0xf816f95b);
+        assert_eq!(murmur3(b"xxxxxxxxxxxxxxxxxxxxxxxxxxxx"), 3551113186);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn parse_filename_expands_prefixes(tc: TestCase) {
+        let f = tc.draw(path());
+        let buf_dir = tc.draw(hegel::one_of!(gs::just(Vec::new()), path()));
+        let expected = if f == b"~" || f.starts_with(b"~/") {
+            [homedir(), f[1..].to_vec()].concat()
+        } else if (f == b"%" || f.starts_with(b"%/")) && !buf_dir.is_empty() {
+            [buf_dir.clone(), f[1..].to_vec()].concat()
+        } else {
+            f.clone()
+        };
+        assert_eq!(parse_filename(&f, &buf_dir), expected);
+    }
 }

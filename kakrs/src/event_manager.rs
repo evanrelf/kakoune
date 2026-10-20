@@ -6,10 +6,11 @@
 //! be called re-entrantly and survive the destruction of their handle while
 //! running.
 
-use crate::exception::Result;
+use crate::exception::{Error, Result};
 use slotmap::{new_key_type, SlotMap};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -252,6 +253,30 @@ impl EventManager {
             Self::instance().try_handle_next_events(EventMode::Urgent, None, Some(Duration::ZERO))?;
         }
         Ok(())
+    }
+}
+
+/// Idle function for long regex searches: handles urgent events and aborts
+/// the search if one of them fails (C++ lets the exception unwind through the
+/// regex engine). Call `check` after the search to propagate the error.
+#[derive(Default)]
+pub struct UrgentEventsIdle {
+    error: Option<Error>,
+}
+
+impl UrgentEventsIdle {
+    pub fn idle(&mut self) -> ControlFlow<()> {
+        match EventManager::handle_urgent_events() {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(err) => {
+                self.error = Some(err);
+                ControlFlow::Break(())
+            }
+        }
+    }
+
+    pub fn check(&mut self) -> Result<()> {
+        self.error.take().map_or(Ok(()), Err)
     }
 }
 

@@ -299,6 +299,12 @@ pub fn parse_face(facedesc: &[u8]) -> Result<FaceSpec> {
     if underline_it != end && underline_it > colors_end {
         return Err(Error::runtime(INVALID_FACE_ERROR));
     }
+    // A base before the background (e.g. "@a,b") makes C++ build a reversed
+    // StringView for the background color, which is undefined behaviour
+    // (it crashes), report the description as invalid instead.
+    if bg_it != end && colors_end <= bg_it {
+        return Err(Error::runtime(INVALID_FACE_ERROR));
+    }
 
     let parse_color = |spec: &[u8]| -> Result<Color> {
         if spec.is_empty() { Ok(Color::DEFAULT) } else { str_to_color(spec) }
@@ -316,7 +322,11 @@ pub fn parse_face(facedesc: &[u8]) -> Result<FaceSpec> {
     if attr_it != end {
         attr_it += 1;
         while attr_it != base_it {
-            let attr = match facedesc[attr_it] {
+            // With a base before the attributes (e.g. "red@a+b") C++ reads
+            // past the end of the description, finding the terminating nul
+            // of the String in practice: report it as an invalid attribute.
+            let c = if attr_it < end { facedesc[attr_it] } else { 0 };
+            let attr = match c {
                 b'u' => Attribute::Underline,
                 b'c' => Attribute::CurlyUnderline,
                 b'U' => Attribute::DoubleUnderline,
@@ -560,4 +570,248 @@ pub fn merge_layers<K: Clone + Eq + std::hash::Hash, V: Clone>(layers: Vec<Index
         res.extend(layer.into_iter());
     }
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::generators as gs;
+    use hegel::{Generator as _, TestCase};
+
+    fn named_color() -> impl hegel::PrintableGenerator<Color> {
+        gs::sampled_from(COLOR_VALUES.to_vec()).map(Color::named)
+    }
+
+    fn rgb_color() -> impl hegel::PrintableGenerator<Color> {
+        hegel::compose!(|tc| {
+            let r = tc.draw(gs::integers::<u8>());
+            let g = tc.draw(gs::integers::<u8>());
+            let b = tc.draw(gs::integers::<u8>());
+            let a = tc.draw(hegel::one_of!(gs::just(255u8), gs::integers::<u8>().min_value(RGB)));
+            Color::rgba(r, g, b, a).unwrap()
+        })
+    }
+
+    fn color() -> impl hegel::PrintableGenerator<Color> {
+        hegel::one_of!(named_color(), rgb_color())
+    }
+
+    const ATTRIBUTES: [Attribute; 13] = [
+        Attribute::Underline,
+        Attribute::CurlyUnderline,
+        Attribute::DoubleUnderline,
+        Attribute::Reverse,
+        Attribute::Blink,
+        Attribute::Bold,
+        Attribute::Dim,
+        Attribute::Italic,
+        Attribute::Strikethrough,
+        Attribute::FinalFg,
+        Attribute::FinalBg,
+        Attribute::FinalAttr,
+        Attribute::Final,
+    ];
+
+    fn attributes() -> impl hegel::PrintableGenerator<Attribute> {
+        gs::vecs(gs::sampled_from(ATTRIBUTES.to_vec()))
+            .map(|v| v.into_iter().fold(Attribute::Normal, |a, b| a | b))
+    }
+
+    fn face() -> impl hegel::PrintableGenerator<Face> {
+        hegel::compose!(|tc| {
+            Face {
+                fg: tc.draw(color()),
+                bg: tc.draw(color()),
+                attributes: tc.draw(attributes()),
+                underline: tc.draw(color()),
+            }
+        })
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_to_color_inverts_color_to_string(tc: TestCase) {
+        let c = tc.draw(color());
+        assert_eq!(str_to_color(&color_to_string(c)).unwrap(), c);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn rgb_strings_roundtrip_case_insensitively(tc: TestCase) {
+        let bytes = tc.draw(gs::vecs(gs::integers::<u8>()).min_size(3).max_size(4));
+        let alpha = bytes.len() == 4;
+        tc.assume(!alpha || bytes[3] >= RGB);
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let upper = tc.draw(gs::booleans());
+        let s = format!("{}:{}", if alpha { "rgba" } else { "rgb" }, if upper { hex.to_uppercase() } else { hex.clone() });
+        let c = str_to_color(s.as_bytes()).unwrap();
+        assert_eq!((c.r, c.g, c.b), (bytes[0], bytes[1], bytes[2]));
+        assert_eq!(c.a, if alpha { bytes[3] } else { 255 });
+        // printing normalizes to lowercase, and to rgb: for opaque colors
+        let expected = if alpha && bytes[3] != 255 { format!("rgba:{hex}") } else { format!("rgb:{}", &hex[..6]) };
+        assert_eq!(color_to_string(c), expected.as_bytes());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn rgba_with_low_alpha_is_rejected(tc: TestCase) {
+        let a = tc.draw(gs::integers::<u8>().max_value(RGB - 1));
+        assert!(str_to_color(format!("rgba:123456{a:02x}").as_bytes()).is_err());
+        assert!(Color::rgba(1, 2, 3, a).is_err());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn invalid_color_strings_are_rejected(tc: TestCase) {
+        let s = tc.draw(hegel::one_of!(
+            gs::binary(),
+            gs::from_regex("rgba?:[0-9a-fA-Fg-zG-Z]{0,9}").fullmatch(true).map(String::into_bytes),
+        ));
+        let valid = is_color_name(&s)
+            || (s.len() == 10 && s.starts_with(b"rgb:") && s[4..].iter().all(u8::is_ascii_hexdigit))
+            || (s.len() == 13
+                && s.starts_with(b"rgba:")
+                && s[5..].iter().all(u8::is_ascii_hexdigit)
+                && u8::from_str_radix(std::str::from_utf8(&s[11..]).unwrap(), 16).unwrap() >= RGB);
+        assert_eq!(str_to_color(&s).is_ok(), valid);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn parse_face_inverts_face_to_string(tc: TestCase) {
+        let f = tc.draw(face());
+        let spec = parse_face(&face_to_string(&f)).unwrap();
+        assert_eq!(spec, FaceSpec { face: f, base: Vec::new() });
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn parse_face_with_base(tc: TestCase) {
+        let f = tc.draw(face());
+        let base = tc.draw(gs::from_regex("[A-Za-z0-9_]*").fullmatch(true));
+        let desc = [face_to_string(&f), b"@".to_vec(), base.clone().into_bytes()].concat();
+        assert_eq!(parse_face(&desc).unwrap(), FaceSpec { face: f, base: base.into_bytes() });
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn word_face_descriptions_are_base_names(tc: TestCase) {
+        let name = tc.draw(gs::from_regex("[A-Za-z0-9_]*").fullmatch(true));
+        let spec = parse_face(name.as_bytes()).unwrap();
+        if is_color_name(name.as_bytes()) {
+            assert_eq!(spec.face.fg, str_to_color(name.as_bytes()).unwrap());
+            assert!(spec.base.is_empty());
+        } else {
+            assert_eq!(spec, FaceSpec { face: Face::default(), base: name.into_bytes() });
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn unknown_attribute_is_rejected(tc: TestCase) {
+        let f = tc.draw(face());
+        let c = tc.draw(gs::integers::<u8>().filter(|c| !b"ucUrbBdisfgaF@".contains(c)));
+        let desc = [face_to_string(&f), b"+".to_vec(), vec![c]].concat();
+        assert!(parse_face(&desc).is_err());
+    }
+
+    /// Descriptions built from the face syntax's tokens, often malformed
+    fn face_desc() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(
+            gs::binary(),
+            gs::vecs(gs::sampled_from(vec![
+                &b"red"[..], b"rgb:ff0000", b"rgba:00ff0080", b",", b"+", b"@", b"b", b"u", b"F", b"x", b"default", b"_",
+            ]))
+            .map(|v| v.concat()),
+        )
+    }
+
+    // C++ has undefined behaviour (crashes, or reads past the end) when '@'
+    // comes before ',' or '+', the port must report an error, not panic.
+    #[hegel::test(test_cases = 1000)]
+    fn parse_face_never_panics(tc: TestCase) {
+        let desc = tc.draw(face_desc());
+        let _ = parse_face(&desc);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn base_before_background_or_attributes_is_an_error(tc: TestCase) {
+        let fg = tc.draw(hegel::one_of!(gs::just(String::new()), gs::just("red".to_string())));
+        let base = tc.draw(gs::from_regex("[A-Za-z_]+").fullmatch(true));
+        let tail = tc.draw(gs::sampled_from(vec![",blue", "+b", ",blue+u", "+"]));
+        assert!(parse_face(format!("{fg}@{base}{tail}").as_bytes()).is_err());
+    }
+
+    // parsing is idempotent through printing
+    #[hegel::test(test_cases = 1000)]
+    fn face_to_string_of_parsed_face_reparses_identically(tc: TestCase) {
+        let desc = tc.draw(face_desc());
+        if let Ok(spec) = parse_face(&desc) {
+            assert_eq!(parse_face(&face_to_string(&spec.face)).unwrap().face, spec.face);
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn attributes_to_string_roundtrips(tc: TestCase) {
+        let a = tc.draw(attributes());
+        let s = attributes_to_string(a);
+        assert_eq!(s.is_empty(), a == Attribute::Normal);
+        let parsed = parse_face(&[&b"red"[..], &s].concat()).unwrap();
+        assert_eq!(parsed.face.attributes, a);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn merging_default_face_is_identity(tc: TestCase) {
+        let f = tc.draw(face());
+        assert_eq!(merge_faces(&f, &Face::default()), f);
+        assert_eq!(merge_faces(&Face::default(), &f), f);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn final_colors_win(tc: TestCase) {
+        let base = tc.draw(face());
+        let face = tc.draw(face());
+        let merged = merge_faces(&base, &face);
+        if face.attributes.has(Attribute::FinalFg) {
+            assert_eq!(merged.fg, face.fg);
+        } else if base.attributes.has(Attribute::FinalFg) {
+            assert_eq!(merged.fg, base.fg);
+        }
+        if face.attributes.has(Attribute::FinalBg) {
+            assert_eq!(merged.bg, face.bg);
+        } else if base.attributes.has(Attribute::FinalBg) {
+            assert_eq!(merged.bg, base.bg);
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn non_final_attributes_are_combined(tc: TestCase) {
+        let base = tc.draw(face());
+        let face = tc.draw(face());
+        let merged = merge_faces(&base, &face);
+        if face.attributes.has(Attribute::FinalAttr) {
+            assert_eq!(merged.attributes, face.attributes | (base.attributes & Attribute::Final));
+        } else if base.attributes.has(Attribute::FinalAttr) {
+            assert_eq!(merged.attributes, base.attributes);
+        } else {
+            assert_eq!(merged.attributes, face.attributes | base.attributes);
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn opaque_or_named_colors_override(tc: TestCase) {
+        let base = tc.draw(face());
+        let mut face = tc.draw(face());
+        face.attributes = Attribute::Normal;
+        tc.assume(!base.attributes.has(Attribute::FinalFg));
+        tc.assume(face.fg != Color::DEFAULT && (!face.fg.is_rgb() || face.fg.a == 255 || !base.fg.is_rgb()));
+        assert_eq!(merge_faces(&base, &face).fg, face.fg);
+    }
+
+    // Blending a translucent color over an rgb one gives a convex combination
+    // of the two colors, and a result at least as opaque as either.
+    #[hegel::test(test_cases = 1000)]
+    fn alpha_blending_is_between_both_colors(tc: TestCase) {
+        let base_color = tc.draw(rgb_color());
+        let color = tc.draw(rgb_color().filter(|c| c.a != 255));
+        let base = Face { fg: base_color, ..Face::default() };
+        let face = Face { fg: color, ..Face::default() };
+        let res = merge_faces(&base, &face).fg;
+        for (r, b, c) in [(res.r, base_color.r, color.r), (res.g, base_color.g, color.g), (res.b, base_color.b, color.b)] {
+            assert!(b.min(c) <= r && r <= b.max(c), "{r} not between {b} and {c}");
+        }
+        assert!(res.a >= color.a.max(base_color.a));
+    }
 }

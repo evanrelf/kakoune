@@ -179,3 +179,63 @@ impl<T: PartialEq> Range<T> {
 }
 
 pub type BufferRange = Range<BufferCoord>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::generators as gs;
+    use hegel::TestCase;
+
+    // Coordinates within a range where sums cannot overflow (as in C++,
+    // where signed overflow is undefined behaviour)
+    fn coord_part() -> impl hegel::PrintableGenerator<i32> {
+        gs::integers::<i32>().min_value(i32::MIN / 2).max_value(i32::MAX / 2)
+    }
+
+    fn buffer_coord(tc: &TestCase) -> BufferCoord {
+        BufferCoord::new(tc.draw(coord_part()), tc.draw(coord_part()))
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn coord_ordering_is_lexicographic(tc: TestCase) {
+        let a = buffer_coord(&tc);
+        let b = buffer_coord(&tc);
+        assert_eq!(a.cmp(&b), (a.line, a.column).cmp(&(b.line, b.column)));
+        let da = DisplayCoord::new(a.line, a.column);
+        let db = DisplayCoord::new(b.line, b.column);
+        assert_eq!(da.cmp(&db), a.cmp(&b));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn coord_sub_inverts_add(tc: TestCase) {
+        let a = buffer_coord(&tc);
+        let b = buffer_coord(&tc);
+        assert_eq!((a + b) - b, a);
+        let mut c = a;
+        c += b;
+        assert_eq!(c, a + b);
+        c -= b;
+        assert_eq!(c, a);
+        let (da, db) = (DisplayCoord::new(a.line, a.column), DisplayCoord::new(b.line, b.column));
+        assert_eq!((da + db) - db, da);
+    }
+
+    // BufferCoordAndTarget compares like its coordinate, ignoring targets
+    #[hegel::test(test_cases = 1000)]
+    fn coord_and_target_compares_coords_only(tc: TestCase) {
+        let a = BufferCoordAndTarget::new(buffer_coord(&tc), tc.draw(gs::integers()), tc.draw(gs::integers()));
+        let b = BufferCoordAndTarget::new(buffer_coord(&tc), tc.draw(gs::integers()), tc.draw(gs::integers()));
+        assert_eq!(a == b, a.coord == b.coord);
+        assert_eq!(a.cmp(&b), a.coord.cmp(&b.coord));
+        let from: BufferCoordAndTarget = a.coord.into();
+        assert_eq!((from.target, from.display_target), (-1, -1));
+        assert_eq!(BufferCoord::from(a), a.coord);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn range_is_empty_iff_bounds_equal(tc: TestCase) {
+        let a = buffer_coord(&tc);
+        let b = if tc.draw(gs::booleans()) { a } else { buffer_coord(&tc) };
+        assert_eq!(Range::new(a, b).empty(), a == b);
+    }
+}

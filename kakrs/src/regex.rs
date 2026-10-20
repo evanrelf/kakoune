@@ -7,6 +7,7 @@ use crate::regex_vm::{
 };
 use crate::string_utils::{Quoting, quoter};
 use crate::utf8::{ByteIt, SliceIt};
+use std::ops::ControlFlow;
 use std::rc::Rc;
 
 /// Regex that keeps track of its string representation
@@ -173,12 +174,14 @@ pub fn match_flags(bol: bool, eol: bool, bow: bool, eow: bool) -> RegexExecFlags
 }
 
 /// NoopIdle
-pub fn noop_idle() {}
+pub fn noop_idle() -> ControlFlow<()> {
+    ControlFlow::Continue(())
+}
 
 pub type MatchNoSaves = Mode<{ RegexMode::FORWARD | RegexMode::ANY_MATCH | RegexMode::NO_SAVES }>;
 pub type SearchNoSaves = Mode<{ RegexMode::FORWARD | RegexMode::SEARCH | RegexMode::ANY_MATCH | RegexMode::NO_SAVES }>;
 
-pub fn regex_match<I: ByteIt>(begin: I, end: I, re: &Regex, idle_func: impl FnMut()) -> bool {
+pub fn regex_match<I: ByteIt>(begin: I, end: I, re: &Regex, idle_func: impl FnMut() -> ControlFlow<()>) -> bool {
     let mut vm = ThreadedRegexVM::<I, MatchNoSaves>::new(re.impl_());
     vm.exec(&begin, &end, &begin, &end, RegexExecFlags::NONE, idle_func)
 }
@@ -188,7 +191,7 @@ pub fn regex_match_captures<I: ByteIt>(
     end: I,
     res: &mut MatchResults<I>,
     re: &Regex,
-    idle_func: impl FnMut(),
+    idle_func: impl FnMut() -> ControlFlow<()>,
 ) -> bool {
     res.clear();
     let mut vm = ThreadedRegexVM::<I, ForwardMode>::new(re.impl_());
@@ -206,7 +209,7 @@ pub fn regex_search<I: ByteIt>(
     subject_end: I,
     re: &Regex,
     flags: RegexExecFlags,
-    idle_func: impl FnMut(),
+    idle_func: impl FnMut() -> ControlFlow<()>,
 ) -> bool {
     let mut vm = ThreadedRegexVM::<I, SearchNoSaves>::new(re.impl_());
     vm.exec(&begin, &end, &subject_begin, &subject_end, flags, idle_func)
@@ -222,7 +225,7 @@ pub fn regex_search_mode<I: ByteIt, M: VmMode>(
     res: &mut MatchResults<I>,
     re: &Regex,
     flags: RegexExecFlags,
-    idle_func: impl FnMut(),
+    idle_func: impl FnMut() -> ControlFlow<()>,
 ) -> bool {
     const { assert!(M::SEARCH) };
     res.clear();
@@ -242,7 +245,7 @@ pub fn regex_search_captures<I: ByteIt>(
     res: &mut MatchResults<I>,
     re: &Regex,
     flags: RegexExecFlags,
-    idle_func: impl FnMut(),
+    idle_func: impl FnMut() -> ControlFlow<()>,
 ) -> bool {
     regex_search_mode::<I, ForwardSearch>(begin, end, subject_begin, subject_end, res, re, flags, idle_func)
 }
@@ -255,7 +258,7 @@ pub fn backward_regex_search<I: ByteIt>(
     res: &mut MatchResults<I>,
     re: &Regex,
     flags: RegexExecFlags,
-    idle_func: impl FnMut(),
+    idle_func: impl FnMut() -> ControlFlow<()>,
 ) -> bool {
     regex_search_mode::<I, BackwardSearch>(begin, end, subject_begin, subject_end, res, re, flags, idle_func)
 }
@@ -297,7 +300,7 @@ pub struct RegexIterator<'a, 'p, I: ByteIt, M: VmMode = ForwardSearch> {
     subject_begin: I,
     subject_end: I,
     flags: RegexExecFlags,
-    idle_func: Option<&'a mut dyn FnMut()>,
+    idle_func: Option<&'a mut dyn FnMut() -> ControlFlow<()>>,
 }
 
 impl<'a, 'p, I: ByteIt, M: VmMode> RegexIterator<'a, 'p, I, M> {
@@ -355,7 +358,7 @@ impl<'a, 'p, I: ByteIt, M: VmMode> RegexIterator<'a, 'p, I, M> {
     }
 
     /// Set the function called periodically during long matches
-    pub fn with_idle(mut self, idle_func: &'a mut dyn FnMut()) -> Self {
+    pub fn with_idle(mut self, idle_func: &'a mut dyn FnMut() -> ControlFlow<()>) -> Self {
         self.idle_func = Some(idle_func);
         self
     }
@@ -368,10 +371,9 @@ impl<'a, 'p, I: ByteIt, M: VmMode> RegexIterator<'a, 'p, I, M> {
         }
 
         let idle_func = &mut self.idle_func;
-        let idle = || {
-            if let Some(f) = idle_func {
-                f()
-            }
+        let idle = || match idle_func {
+            Some(f) => f(),
+            None => ControlFlow::Continue(()),
         };
         let (begin, end) =
             if M::FORWARD { (&self.next_pos, &self.end) } else { (&self.begin, &self.next_pos) };
@@ -466,7 +468,7 @@ mod tests {
         assert_eq!(bwd, vec![&b"baz"[..], b"", b"bar", b"", b"foo"]);
 
         let mut vm = ThreadedRegexVM::<_, ForwardSearch>::new(re.impl_());
-        let mut idle = || {};
+        let mut idle = noop_idle;
         let mut count = 0;
         let mut iter = RegexIterator::with_vm_range(b, e, &mut vm, RegexExecFlags::NONE).with_idle(&mut idle);
         while let Some(m) = iter.next_match() {

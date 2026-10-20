@@ -189,3 +189,29 @@ pub fn for_n_best<T>(mut items: Vec<T>, mut count: usize, less: impl Fn(&T, &T) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::make_buffer;
+    use crate::units::BufferCoord;
+
+    #[test]
+    fn test_word_db() {
+        let buffer = make_buffer(b"tchou mutch\ntchou kanaky tchou\n\ntchaa tchaa\nallo\n");
+        let word_db = WordDB::new(&buffer);
+        let words = |db: &WordDB| {
+            let mut res: Vec<Vec<u8>> = db.find_matching(b"").into_iter().map(|(w, _)| w.to_vec()).collect();
+            res.sort();
+            res
+        };
+        let list = |w: &[&str]| w.iter().map(|s| s.as_bytes().to_vec()).collect::<Vec<_>>();
+        assert_eq!(words(&word_db), list(&["allo", "kanaky", "mutch", "tchaa", "tchou"]));
+        assert_eq!(word_db.get_word_occurences(b"tchou"), 3);
+        assert_eq!(word_db.get_word_occurences(b"allo"), 1);
+        buffer.erase(BufferCoord::new(1, 6), BufferCoord::new(4, 0)).unwrap();
+        assert_eq!(words(&word_db), list(&["allo", "mutch", "tchou"]));
+        buffer.insert(BufferCoord::new(1, 0), b"re").unwrap();
+        assert_eq!(words(&word_db), list(&["allo", "mutch", "retchou", "tchou"]));
+    }
+}

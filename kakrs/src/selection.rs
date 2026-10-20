@@ -723,3 +723,240 @@ pub fn selection_list_from_strings(
     res.set_main_index(main);
     Ok(res)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{buffer_content, coord_of, make_buffer, offset_of, text};
+    use hegel::generators as gs;
+    use hegel::{Generator as _, TestCase};
+
+    /// Codepoint start offsets of `content` (excluding its end)
+    fn char_starts(content: &[u8]) -> Vec<usize> {
+        std::str::from_utf8(content).unwrap().char_indices().map(|(i, _)| i).collect()
+    }
+
+    /// 1 to 6 selections on codepoint starts of `content`, as (anchor, cursor) offsets
+    fn draw_selections(tc: &TestCase, content: &[u8]) -> Vec<(usize, usize)> {
+        let starts = char_starts(content);
+        let idx = || gs::integers::<usize>().max_value(starts.len() - 1);
+        tc.draw(gs::vecs(gs::tuples!(idx(), idx())).min_size(1).max_size(6))
+            .into_iter()
+            .map(|(a, c)| (starts[a], starts[c]))
+            .collect()
+    }
+
+    fn to_selection(content: &[u8], (anchor, cursor): (usize, usize)) -> Selection {
+        Selection::from_range(coord_of(content, anchor), coord_of(content, cursor))
+    }
+
+    /// Byte offsets covered by `sel`, which ends on the last byte of the
+    /// codepoint at max
+    fn covered(content: &[u8], sel: &Selection) -> std::ops::Range<usize> {
+        let max = offset_of(content, sel.max());
+        offset_of(content, sel.min())..max + crate::utf8::codepoint_size_of_byte(content[max])
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn sort_and_merge_overlapping_partitions_coverage(tc: TestCase) {
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let sels: Vec<Selection> = draw_selections(&tc, &content).into_iter().map(|s| to_selection(&content, s)).collect();
+        let main = tc.draw(gs::integers::<usize>().max_value(sels.len() - 1));
+        let main_sel = sels[main].clone();
+
+        let mut list = SelectionList::from_vec(buffer.clone(), sels.clone());
+        list.set_main_index(main);
+        list.sort_and_merge_overlapping();
+
+        let result = list.as_slice();
+        for w in result.windows(2) {
+            assert!(compare_selections(&w[0], &w[1]));
+            assert!(!overlaps(&w[0], &w[1]));
+        }
+        // same set of covered positions (selections are inclusive of max)
+        let set = |sels: &[Selection]| {
+            let mut v: Vec<BufferCoord> = Vec::new();
+            for s in sels {
+                let mut c = s.min();
+                loop {
+                    v.push(c);
+                    if c == s.max() {
+                        break;
+                    }
+                    c = buffer.next(c);
+                }
+            }
+            v.sort();
+            v.dedup();
+            v
+        };
+        assert_eq!(set(&sels), set(result));
+        // main follows the selection it was merged into
+        let new_main = list.main();
+        assert!(new_main.min() <= main_sel.min() && main_sel.max() <= new_main.max());
+    }
+
+    #[derive(Debug, Clone)]
+    enum Edit {
+        Insert(usize, Vec<u8>),
+        Erase(usize, usize),
+    }
+
+    fn edit() -> impl hegel::PrintableGenerator<Edit> {
+        let offset = || gs::integers::<usize>().max_value(200);
+        hegel::one_of!(
+            gs::tuples!(offset(), text()).map(|(o, t)| Edit::Insert(o, t)),
+            gs::tuples!(offset(), offset()).map(|(a, b)| Edit::Erase(a, b)),
+        )
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn update_follows_surviving_bytes(tc: TestCase) {
+        // Track every byte through edits with an id; a selection end on a
+        // byte that was not erased must still be on that byte after update.
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let sels = draw_selections(&tc, &content).into_iter().map(|s| to_selection(&content, s)).collect();
+        // update requires the list invariant: sorted, non overlapping
+        let mut list = SelectionList::from_vec(buffer.clone(), sels);
+        list.sort_and_merge_overlapping();
+        let sels: Vec<(usize, usize)> = list
+            .iter()
+            .map(|s| (offset_of(&content, s.anchor()), offset_of(&content, s.cursor().coord)))
+            .collect();
+
+        let mut next_id = content.len();
+        let mut ids: Vec<usize> = (0..content.len()).collect();
+        for edit in tc.draw(gs::vecs(edit()).max_size(10)) {
+            let len = ids.len();
+            let model = buffer_content(&buffer);
+            match edit {
+                Edit::Insert(o, t) => {
+                    let o = o % (len + 1);
+                    let range = buffer.insert(coord_of(&model, o), &t).unwrap();
+                    let inserted = offset_of(&buffer_content(&buffer), range.end) - o;
+                    ids.splice(o..o, next_id..next_id + inserted);
+                    next_id += inserted;
+                }
+                Edit::Erase(a, b) => {
+                    let (a, b) = (a % (len + 1), b % (len + 1));
+                    let (a, b) = (a.min(b), a.max(b));
+                    let before = buffer_content(&buffer).len();
+                    buffer.erase(coord_of(&model, a), coord_of(&model, b)).unwrap();
+                    let erased = before - buffer_content(&buffer).len();
+                    ids.drain(a..a + erased);
+                }
+            }
+        }
+        list.update(false);
+
+        let content = buffer_content(&buffer);
+        assert_eq!(ids.len(), content.len());
+        for (sel, &(anchor, cursor)) in list.iter().zip(&sels) {
+            for (coord, original) in [(sel.anchor(), anchor), (sel.cursor().coord, cursor)] {
+                assert!(coord <= buffer.back_coord() && coord.column < buffer.line_length(coord.line));
+                if let Some(pos) = ids.iter().position(|&id| id == original) {
+                    assert_eq!(coord, coord_of(&content, pos));
+                }
+            }
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn replace_puts_each_string_in_its_selection(tc: TestCase) {
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let sels: Vec<Selection> = draw_selections(&tc, &content).into_iter().map(|s| to_selection(&content, s)).collect();
+        let mut list = SelectionList::from_vec(buffer.clone(), sels);
+        list.sort_and_merge_overlapping();
+        let strings: Vec<Vec<u8>> = (0..list.size()).map(|_| tc.draw(text().filter(|t| !t.is_empty()))).collect();
+
+        list.replace(&strings).unwrap();
+
+        for (sel, s) in list.iter().zip(&strings) {
+            let selected = buffer.string(sel.min(), buffer.char_next(sel.max()));
+            // The buffer always ends with an eol: replacing up to the end with
+            // a string lacking one can leave the added final eol selected.
+            let with_eol = [&s[..], b"\n"].concat();
+            assert!(
+                selected == *s || (selected == with_eol && buffer.char_next(sel.max()) == buffer.end_coord()),
+                "{selected:?} for {s:?}"
+            );
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn erase_removes_selected_text(tc: TestCase) {
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let sels: Vec<Selection> = draw_selections(&tc, &content).into_iter().map(|s| to_selection(&content, s)).collect();
+        let mut list = SelectionList::from_vec(buffer.clone(), sels);
+        list.sort_and_merge_overlapping();
+
+        // Model: erase each range front to back, keeping the final end of line
+        // unless a whole line up to the end is erased (Buffer::erase contract)
+        let mut model = content.clone();
+        let mut removed = 0;
+        for sel in list.iter() {
+            let r = covered(&content, sel);
+            let (a, mut b) = (r.start - removed, r.end - removed);
+            if b == model.len() && (coord_of(&model, a).column != 0 || a == 0) {
+                b -= 1;
+            }
+            if a < b {
+                model.drain(a..b);
+                removed += b - a;
+            }
+        }
+
+        list.erase().unwrap();
+
+        assert_eq!(buffer_content(&buffer), model);
+        for sel in list.iter() {
+            assert_eq!(sel.anchor(), sel.cursor().coord);
+            assert!(buffer.is_valid(sel.anchor()) && !buffer.is_end(sel.anchor()));
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn selection_desc_roundtrips(tc: TestCase) {
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let sels: Vec<Selection> = draw_selections(&tc, &content).into_iter().map(|s| to_selection(&content, s)).collect();
+        for column_type in [ColumnType::Byte, ColumnType::Codepoint, ColumnType::DisplayColumn] {
+            for sel in &sels {
+                let desc = selection_to_string(column_type, &buffer, sel, 8);
+                let parsed = selection_from_string(column_type, &buffer, &desc, 8).unwrap();
+                assert_eq!((parsed.anchor(), parsed.cursor().coord), (sel.anchor(), sel.cursor().coord), "{column_type:?}");
+            }
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn selection_list_desc_roundtrips(tc: TestCase) {
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let sels: Vec<Selection> = draw_selections(&tc, &content).into_iter().map(|s| to_selection(&content, s)).collect();
+        let mut list = SelectionList::from_vec(buffer.clone(), sels);
+        list.sort_and_merge_overlapping();
+        let main = tc.draw(gs::integers::<usize>().max_value(list.size() - 1));
+        list.set_main_index(main);
+
+        // the list description starts with the main selection
+        let desc = selection_list_to_string(ColumnType::Byte, &list, 8);
+        let descs: Vec<Vec<u8>> = desc.split(|&c| c == b' ').map(|d| d.to_vec()).collect();
+        let parsed = selection_list_from_strings(&buffer, ColumnType::Byte, &descs, buffer.timestamp(), 0, 8).unwrap();
+        assert_eq!(parsed.as_slice(), list.as_slice());
+        assert_eq!(parsed.main_index(), main);
+    }
+
+    #[test]
+    fn selection_from_string_rejects_malformed() {
+        let buffer = make_buffer(b"abc\n");
+        for desc in [&b""[..], b"1.1", b"1,1.1", b"1.1,1", b"a.1,1.1", b"0.1,1.1"] {
+            assert!(selection_from_string(ColumnType::Byte, &buffer, desc, 8).is_err(), "{desc:?}");
+        }
+        assert!(selection_from_string(ColumnType::Codepoint, &buffer, b"1.5,1.1", 8).is_err());
+    }
+}

@@ -171,3 +171,152 @@ pub fn is_upper(cp: Codepoint) -> bool {
         unsafe { iswupper(cp as wint_t) != 0 }
     }
 }
+
+/// Kakoune calls setlocale(LC_ALL, "") at startup, wcwidth/iswalnum/towlower
+/// depend on it. Tests relying on non-ASCII classification call this first.
+#[cfg(test)]
+pub(crate) fn init_test_locale() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        if libc::setlocale(libc::LC_ALL, c"en_US.UTF-8".as_ptr()).is_null() {
+            libc::setlocale(libc::LC_ALL, c"C.UTF-8".as_ptr());
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hegel::TestCase;
+    use hegel::generators as gs;
+
+    /// Any u32: valid scalar values, surrogates, out of range values and
+    /// values with the sign bit set (as produced by decoding invalid utf8).
+    fn any_codepoint() -> impl hegel::PrintableGenerator<Codepoint> {
+        hegel::one_of!(
+            gs::integers::<u32>().max_value(0x7F),
+            gs::integers::<u32>().max_value(0x10FFFF),
+            gs::integers::<u32>(),
+        )
+    }
+
+    // ECMA WhiteSpace + LineTerminator (plus vertical tab) is Unicode's
+    // White_Space property, minus U+0085 (NEL), plus U+FEFF (ZWNBSP).
+    #[hegel::test(test_cases = 1000)]
+    fn is_blank_is_ecma_whitespace(tc: TestCase) {
+        let c = tc.draw(any_codepoint());
+        let expected = c == 0xFEFF || (c != 0x85 && char::from_u32(c).is_some_and(char::is_whitespace));
+        assert_eq!(is_blank(c), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn horizontal_blank_is_blank_minus_vertical(tc: TestCase) {
+        let c = tc.draw(any_codepoint());
+        let vertical = c == '\n' as u32 || c == '\r' as u32 || c == 0x0B;
+        assert_eq!(is_horizontal_blank(c), is_blank(c) && !vertical);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn ascii_classification_matches_std(tc: TestCase) {
+        let c = tc.draw(gs::integers::<u8>().max_value(0x7F));
+        let cp = c as Codepoint;
+        assert_eq!(is_basic_alpha(cp), c.is_ascii_alphabetic());
+        assert_eq!(is_basic_digit(cp), c.is_ascii_digit());
+        assert_eq!(is_alnum(cp), c.is_ascii_alphanumeric());
+        assert_eq!(is_lower(cp), c.is_ascii_lowercase());
+        assert_eq!(is_upper(cp), c.is_ascii_uppercase());
+        assert_eq!(is_identifier(cp), c.is_ascii_alphanumeric() || c == b'_' || c == b'-');
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn ascii_case_mapping_matches_std(tc: TestCase) {
+        let c = tc.draw(gs::integers::<u8>().max_value(0x7F));
+        assert_eq!(to_lower(c as Codepoint), c.to_ascii_lowercase() as Codepoint);
+        assert_eq!(to_upper(c as Codepoint), c.to_ascii_uppercase() as Codepoint);
+        assert_eq!(to_lower_byte(c) as Codepoint, to_lower(c as Codepoint));
+        assert_eq!(to_upper_byte(c) as Codepoint, to_upper(c as Codepoint));
+    }
+
+    // The byte versions only touch ASCII letters, whatever the byte.
+    #[hegel::test(test_cases = 1000)]
+    fn byte_case_mapping_only_touches_ascii_letters(tc: TestCase) {
+        let c = tc.draw(gs::integers::<u8>());
+        let lower = to_lower_byte(c);
+        if c.is_ascii_uppercase() {
+            assert_eq!(lower, c + 32);
+        } else {
+            assert_eq!(lower, c);
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn codepoint_width_is_0_1_or_2(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(any_codepoint());
+        let w = codepoint_width(c);
+        assert!((0..=2).contains(&w), "width of {c:#x} is {w}");
+        if c < 0x80 {
+            assert_eq!(w, 1);
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn cjk_ideographs_are_wide(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(gs::integers::<u32>().min_value(0x4E00).max_value(0x9FFF));
+        assert_eq!(codepoint_width(c), 2);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn combining_diacritics_are_zero_width(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(gs::integers::<u32>().min_value(0x300).max_value(0x36F));
+        assert_eq!(codepoint_width(c), 0);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn extra_word_chars_are_words(tc: TestCase) {
+        init_test_locale();
+        let extra = tc.draw(gs::vecs(any_codepoint()).max_size(5));
+        let c = if !extra.is_empty() && tc.draw(gs::booleans()) {
+            tc.draw(gs::sampled_from(extra.clone()))
+        } else {
+            tc.draw(any_codepoint())
+        };
+        assert_eq!(is_word(c, &extra), is_word(c, &[]) || extra.contains(&c));
+        assert_eq!(is_word(c, &[]), is_alnum(c));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn word_type_word_is_not_blank(tc: TestCase) {
+        let c = tc.draw(any_codepoint());
+        assert_eq!(is_word_type(WordType::WORD, c, &[]), !is_blank(c));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn categorize_end_of_line_and_blank(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(any_codepoint());
+        let word_type = tc.draw(gs::sampled_from(vec![WordType::Word, WordType::WORD]));
+        let cat = categorize(word_type, c, DEFAULT_EXTRA_WORD_CHARS);
+        assert_eq!(cat == CharCategories::EndOfLine, is_eol(c));
+        assert_eq!(cat == CharCategories::Blank, is_horizontal_blank(c));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn categorize_word_agrees_with_is_word(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(any_codepoint());
+        let cat = categorize(WordType::Word, c, DEFAULT_EXTRA_WORD_CHARS);
+        if !is_eol(c) && !is_horizontal_blank(c) {
+            assert_eq!(cat == CharCategories::Word, is_word_default(c));
+        }
+        // C++ quirk: '\r' and '\v' are blanks for is_punctuation but neither
+        // eol nor horizontal blanks for categorize, so they categorize as
+        // Punctuation.
+        if cat == CharCategories::Punctuation {
+            assert!(is_punctuation(c, DEFAULT_EXTRA_WORD_CHARS) || c == '\r' as u32 || c == 0x0B);
+        }
+        assert_ne!(categorize(WordType::WORD, c, DEFAULT_EXTRA_WORD_CHARS), CharCategories::Punctuation);
+    }
+}

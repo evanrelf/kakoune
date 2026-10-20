@@ -7,6 +7,7 @@ use crate::units::{CharCount, Codepoint};
 use crate::utf8::{ByteIt, it_previous, it_to_next, it_to_previous};
 use std::cell::Cell;
 use std::marker::PhantomData;
+use std::ops::ControlFlow;
 
 fn regex_error(msg: impl Into<Vec<u8>>) -> Error {
     Error::new(ErrorKind::RegexError, msg)
@@ -1836,7 +1837,7 @@ impl<'p, I: ByteIt, M: VmMode> ThreadedRegexVM<'p, I, M> {
         subject_begin: &I,
         subject_end: &I,
         flags: RegexExecFlags,
-        mut idle_func: impl FnMut(),
+        mut idle_func: impl FnMut() -> ControlFlow<()>,
     ) -> bool {
         if flags.contains(RegexExecFlags::NOT_INITIAL_NULL) && begin == end {
             return false;
@@ -2052,7 +2053,7 @@ impl<'p, I: ByteIt, M: VmMode> ThreadedRegexVM<'p, I, M> {
         }
     }
 
-    fn exec_program(&mut self, start: &I, config: &ExecConfig<I>, idle_func: &mut impl FnMut()) {
+    fn exec_program(&mut self, start: &I, config: &ExecConfig<I>, idle_func: &mut impl FnMut() -> ControlFlow<()>) {
         debug_assert!(self.threads.current_is_empty() && self.threads.next_is_empty());
         self.threads.ensure_initial_capacity();
         self.release_saves(self.captures);
@@ -2087,8 +2088,14 @@ impl<'p, I: ByteIt, M: VmMode> ThreadedRegexVM<'p, I, M> {
             current_step = current_step.wrapping_add(1);
             if current_step == 0 {
                 idle_count = idle_count.wrapping_add(1);
-                if idle_count == 0 {
-                    idle_func();
+                if idle_count == 0 && idle_func().is_break() {
+                    // Abort the search (C++ unwinds through here with an exception)
+                    while !self.threads.current_is_empty() {
+                        let thread = self.threads.pop_current();
+                        self.release_saves(thread.saves);
+                    }
+                    self.found_match = false;
+                    return;
                 }
 
                 // We wrapped, avoid potential collision on inst.last_step by resetting them
@@ -2289,7 +2296,7 @@ mod tests {
     fn exec_flags<M: VmMode>(vm: &mut Vm<'_, M>, s: &'static [u8], flags: RegexExecFlags) -> bool {
         let b = SliceIt::new(s, 0);
         let e = SliceIt::new(s, s.len());
-        vm.exec(&b, &e, &b, &e, flags, || {})
+        vm.exec(&b, &e, &b, &e, flags, || ControlFlow::Continue(()))
     }
 
     fn exec<M: VmMode>(vm: &mut Vm<'_, M>, s: &'static str) -> bool {
@@ -2661,7 +2668,7 @@ mod tests {
             test_vm!(vm, FS, "ab");
             let s: &'static [u8] = "fa😄ab".as_bytes();
             let it = |pos| SliceIt::new(s, pos);
-            assert!(!vm.exec(&it(0), &it(4), &it(0), &it(s.len()), RegexExecFlags::NONE, || {}));
+            assert!(!vm.exec(&it(0), &it(4), &it(0), &it(s.len()), RegexExecFlags::NONE, || ControlFlow::Continue(())));
         }
         {
             test_vm!(vm, r"\0\x0A\u00260e\u00260F");

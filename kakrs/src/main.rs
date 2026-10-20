@@ -48,10 +48,13 @@ pub mod regex_vm;
 pub mod register_manager;
 pub mod remote;
 pub mod scope;
+pub mod selectors;
 pub mod selection;
 pub mod shell_manager;
 pub mod string_utils;
 pub mod terminal_ui;
+#[cfg(test)]
+mod test_utils;
 pub mod unicode;
 pub mod units;
 pub mod user_interface;

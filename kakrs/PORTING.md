@@ -33,3 +33,11 @@ against the Rust binary.
 - Undefined behaviour in the C++ (out of range accesses, more than 32
   regex captures in the valid capture mask...) is replaced by well defined
   behaviour, see the comments at the relevant places.
+- `InsertCompleter::select` records the inserted completion one key per
+  codepoint. The C++ records one key per byte (`for (auto& c : completion)
+  record_key(c)`, with sign extended chars), so repeating an insertion of a
+  non ascii completion with `.` inserts nothing for those characters.
+- Regex searches abort when handling urgent events fails (e.g. `<c-g>`
+  cancel): the idle callback returns `ControlFlow::Break` and the error is
+  returned through `UrgentEventsIdle::check`, where the C++ unwinds through
+  the regex engine with an exception.

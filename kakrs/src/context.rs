@@ -187,6 +187,10 @@ pub struct Context {
     client: RefCell<Option<Weak<Client>>>,
     local_scopes: RefCell<Vec<Scope>>,
     selection_history: RefCell<SelectionHistory>,
+    /// Buffer of the current selections, used when the selection history is
+    /// borrowed (for example while iterating on selections with a callback
+    /// that queries the context buffer).
+    buffer_cache: RefCell<Option<Rc<Buffer>>>,
     name: RefCell<Vec<u8>>,
     jump_list: RefCell<JumpList>,
     last_select: RefCell<Option<LastSelectFunc>>,
@@ -208,6 +212,7 @@ impl Context {
             client: RefCell::new(None),
             local_scopes: RefCell::new(Vec::new()),
             selection_history: RefCell::new(history),
+            buffer_cache: RefCell::new(None),
             name: RefCell::new(name),
             jump_list: RefCell::new(JumpList::default()),
             last_select: RefCell::new(None),
@@ -228,6 +233,7 @@ impl Context {
             client: RefCell::new(None),
             local_scopes: RefCell::new(Vec::new()),
             selection_history: RefCell::new(SelectionHistory::default()),
+            buffer_cache: RefCell::new(None),
             name: RefCell::new(Vec::new()),
             jump_list: RefCell::new(JumpList::default()),
             last_select: RefCell::new(None),
@@ -240,7 +246,11 @@ impl Context {
     }
 
     pub fn has_buffer(&self) -> bool {
-        !self.selection_history.borrow().empty()
+        match self.selection_history.try_borrow() {
+            Ok(history) => !history.empty(),
+            // borrowed for selection access, so there are selections
+            Err(_) => true,
+        }
     }
 
     pub fn buffer(&self) -> Rc<Buffer> {
@@ -248,11 +258,17 @@ impl Context {
     }
 
     pub fn try_buffer(&self) -> Result<Rc<Buffer>> {
-        if !self.has_buffer() {
-            return Err(Error::runtime("no buffer in context"));
+        match self.selection_history.try_borrow_mut() {
+            Ok(mut history) => {
+                if history.empty() {
+                    return Err(Error::runtime("no buffer in context"));
+                }
+                let buffer = history.current_selections_mut().buffer().clone();
+                *self.buffer_cache.borrow_mut() = Some(buffer.clone());
+                Ok(buffer)
+            }
+            Err(_) => self.buffer_cache.borrow().clone().ok_or_else(|| Error::runtime("no buffer in context")),
         }
-        let mut history = self.selection_history.borrow_mut();
-        Ok(history.current_selections_mut().buffer().clone())
     }
 
     pub fn has_window(&self) -> bool {
@@ -313,6 +329,7 @@ impl Context {
             panic!("no selections in context");
         }
         let mut sels = RefMut::map(history, |h| h.current_selections_mut());
+        *self.buffer_cache.borrow_mut() = Some(sels.buffer().clone());
         if update {
             sels.update(true);
         }

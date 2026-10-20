@@ -308,4 +308,168 @@ mod tests {
             assert_eq!(apply(a.as_bytes(), b.as_bytes()), b.as_bytes());
         }
     }
+
+    use hegel::generators as gs;
+    use hegel::TestCase;
+
+    /// Sequences over small alphabets (many common elements) or larger ones
+    fn seq() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(
+            gs::vecs(gs::integers::<u8>().max_value(1)).max_size(30),
+            gs::vecs(gs::integers::<u8>().max_value(3)).max_size(30),
+            gs::binary().max_size(30),
+        )
+    }
+
+    /// A pair of related sequences: b is a random edit of a
+    fn related_pair(tc: &TestCase) -> (Vec<u8>, Vec<u8>) {
+        let a = tc.draw(seq());
+        let b = if tc.draw(gs::booleans()) {
+            tc.draw(seq())
+        } else {
+            let mut b = a.clone();
+            let edits = tc.draw(gs::integers::<usize>().max_value(5));
+            for _ in 0..edits {
+                let pos = tc.draw(gs::integers::<usize>().max_value(b.len()));
+                if tc.draw(gs::booleans()) || b.is_empty() || pos == b.len() {
+                    b.insert(pos, tc.draw(gs::integers::<u8>().max_value(4)));
+                } else {
+                    b.remove(pos);
+                }
+            }
+            b
+        };
+        (a, b)
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn applying_diff_gives_target(tc: TestCase) {
+        let (a, b) = related_pair(&tc);
+        assert_eq!(apply(&a, &b), b);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn kept_elements_are_equal(tc: TestCase) {
+        let (a, b) = related_pair(&tc);
+        let (mut ia, mut ib) = (0usize, 0usize);
+        for d in compute_diff(&a, &b) {
+            let len = d.len as usize;
+            match d.op {
+                DiffOp::Keep => {
+                    assert_eq!(a[ia..ia + len], b[ib..ib + len]);
+                    ia += len;
+                    ib += len;
+                }
+                DiffOp::Add => ib += len,
+                DiffOp::Remove => ia += len,
+            }
+        }
+        assert_eq!((ia, ib), (a.len(), b.len()));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn diff_entries_are_merged_and_non_empty(tc: TestCase) {
+        let (a, b) = related_pair(&tc);
+        let d = compute_diff(&a, &b);
+        assert!(d.iter().all(|d| d.len > 0));
+        assert!(d.windows(2).all(|w| w[0].op != w[1].op));
+    }
+
+    fn lcs(a: &[u8], b: &[u8]) -> usize {
+        let mut prev = vec![0usize; b.len() + 1];
+        for x in a {
+            let mut cur = vec![0usize; b.len() + 1];
+            for (j, y) in b.iter().enumerate() {
+                cur[j + 1] = if x == y { prev[j] + 1 } else { prev[j + 1].max(cur[j]) };
+            }
+            prev = cur;
+        }
+        prev[b.len()]
+    }
+
+    // Under the cost limit, the diff is a shortest edit script: it keeps a
+    // longest common subsequence.
+    #[hegel::test(test_cases = 1000)]
+    fn diff_is_minimal(tc: TestCase) {
+        let (a, b) = related_pair(&tc);
+        let kept: i32 = compute_diff(&a, &b).iter().filter(|d| d.op == DiffOp::Keep).map(|d| d.len).sum();
+        assert_eq!(kept as usize, lcs(&a, &b));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn identical_sequences_are_kept(tc: TestCase) {
+        let a = tc.draw(seq());
+        let expected = if a.is_empty() { vec![] } else { vec![Diff { op: DiffOp::Keep, len: a.len() as i32 }] };
+        assert_eq!(compute_diff(&a, &a), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn diff_from_or_to_empty(tc: TestCase) {
+        let a = tc.draw(seq());
+        tc.assume(!a.is_empty());
+        assert_eq!(compute_diff(&a, &[]), vec![Diff { op: DiffOp::Remove, len: a.len() as i32 }]);
+        assert_eq!(compute_diff(&[], &a), vec![Diff { op: DiffOp::Add, len: a.len() as i32 }]);
+    }
+
+    // Past the cost limit (more than 1000 differences), the fallback path
+    // must still produce a valid edit script.
+    #[hegel::test(test_cases = 30)]
+    fn diff_beyond_cost_limit_reconstructs_target(tc: TestCase) {
+        let a = tc.draw(gs::vecs(gs::integers::<u16>()).min_size(1000).max_size(1600));
+        let b = if tc.draw(gs::booleans()) {
+            a.iter().rev().copied().collect()
+        } else {
+            tc.draw(gs::vecs(gs::integers::<u16>()).min_size(1000).max_size(1600))
+        };
+        let (mut ia, mut ib) = (0usize, 0usize);
+        for d in compute_diff(&a, &b) {
+            let len = d.len as usize;
+            match d.op {
+                DiffOp::Keep => {
+                    assert_eq!(a[ia..ia + len], b[ib..ib + len]);
+                    ia += len;
+                    ib += len;
+                }
+                DiffOp::Add => ib += len,
+                DiffOp::Remove => ia += len,
+            }
+        }
+        assert_eq!((ia, ib), (a.len(), b.len()));
+    }
+
+    // Scale probe: past the cost limit (1000) the algorithm falls back on a
+    // non minimal path, which must still be a valid edit script.
+    #[test]
+    fn diff_beyond_cost_limit_is_valid() {
+        let mut state = 0x12345678u32;
+        let mut rand = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state
+        };
+        let a: Vec<u32> = (0..3000).map(|_| rand() % 1000).collect();
+        let b: Vec<u32> = (0..3000).map(|_| rand() % 1000).collect();
+        let diff = compute_diff(&a, &b);
+        let (mut ia, mut ib) = (0usize, 0usize);
+        let mut res = Vec::new();
+        for d in diff {
+            let len = d.len as usize;
+            match d.op {
+                DiffOp::Keep => {
+                    assert_eq!(a[ia..ia + len], b[ib..ib + len]);
+                    res.extend_from_slice(&a[ia..ia + len]);
+                    ia += len;
+                    ib += len;
+                }
+                DiffOp::Add => {
+                    res.extend_from_slice(&b[ib..ib + len]);
+                    ib += len;
+                }
+                DiffOp::Remove => ia += len,
+            }
+        }
+        assert_eq!((ia, ib), (a.len(), b.len()));
+        assert_eq!(res, b);
+    }
 }

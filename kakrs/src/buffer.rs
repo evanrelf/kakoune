@@ -1175,3 +1175,358 @@ impl std::fmt::Debug for Buffer {
         write!(f, "Buffer({})", String::from_utf8_lossy(&self.display_name()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::{buffer_content, coord_of, make_buffer, make_lines, setup_globals, text};
+    use crate::utf8::ByteIt;
+    use hegel::generators as gs;
+    use hegel::{Generator as _, TestCase};
+
+    fn new_buffer(lines: &[&str]) -> Rc<Buffer> {
+        setup_globals();
+        let lines = lines.iter().map(|l| Rc::from(l.as_bytes())).collect();
+        Buffer::new(
+            b"test".to_vec(),
+            BufferFlags::None,
+            lines,
+            ByteOrderMark::None,
+            EolFormat::Lf,
+            FinalEol::Present,
+            Default::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_buffer() {
+        let _empty_buffer = new_buffer(&["\n"]);
+
+        let buffer = new_buffer(&["allo ?\n", "mais que fais la police\n", " hein ?\n", " youpi\n"]);
+        assert_eq!(buffer.line_count(), 4);
+
+        {
+            let lines = buffer.lines();
+            let mut pos = BufferIterator::begin(&lines);
+            assert_eq!(pos.get(), b'a');
+            pos = pos.add(6);
+            assert_eq!(pos.coord(), BufferCoord::new(0, 6));
+            pos.inc();
+            assert_eq!(pos.coord(), BufferCoord::new(1, 0));
+            pos = pos.prev_byte();
+            assert_eq!(pos.coord(), BufferCoord::new(0, 6));
+            pos = pos.add(1);
+            assert_eq!(pos.coord(), BufferCoord::new(1, 0));
+        }
+        buffer.insert(BufferCoord::new(1, 0), b"tchou kanaky\n").unwrap();
+        assert_eq!(buffer.line_count(), 5);
+        {
+            let lines = buffer.lines();
+            let pos2 = BufferIterator::end(&lines).sub(9);
+            assert_eq!(pos2.get(), b'?');
+        }
+
+        let s = buffer.string(BufferCoord::new(4, 1), buffer.next(BufferCoord::new(4, 5)));
+        assert_eq!(s, b"youpi");
+
+        // check insert at end behaviour: auto add end of line if necessary
+        let pos = buffer.prev(buffer.end_coord());
+        buffer.insert(pos, b"tchou").unwrap();
+        assert_eq!(buffer.string(pos, buffer.end_coord()), b"tchou\n");
+
+        let pos = buffer.prev(buffer.end_coord());
+        buffer.insert(buffer.end_coord(), b"kanaky\n").unwrap();
+        assert_eq!(buffer.string(buffer.next(pos), buffer.end_coord()), b"kanaky\n");
+
+        buffer.commit_undo_group();
+        buffer.erase(buffer.next(pos), buffer.end_coord()).unwrap();
+        buffer.insert(buffer.end_coord(), b"mutch\n").unwrap();
+        buffer.commit_undo_group();
+        buffer.undo(1).unwrap();
+        assert_eq!(buffer.string(buffer.advance(buffer.end_coord(), -7), buffer.end_coord()), b"kanaky\n");
+        buffer.redo(1).unwrap();
+        assert_eq!(buffer.string(buffer.advance(buffer.end_coord(), -6), buffer.end_coord()), b"mutch\n");
+    }
+
+    #[test]
+    fn test_undo() {
+        let buffer = new_buffer(&["allo ?\n", "mais que fais la police\n", " hein ?\n", " youpi\n"]);
+        let pos = buffer.end_coord();
+        buffer.insert(pos, b"kanaky\n").unwrap(); // change 1
+        buffer.commit_undo_group();
+        buffer.erase(pos, buffer.end_coord()).unwrap(); // change 2
+        buffer.commit_undo_group();
+        buffer.insert(BufferCoord::line(2), b"tchou\n").unwrap(); // change 3
+        buffer.commit_undo_group();
+        buffer.undo(1).unwrap();
+        buffer.insert(BufferCoord::line(2), b"mutch\n").unwrap(); // change 4
+        buffer.commit_undo_group();
+        buffer.erase(BufferCoord::new(2, 1), BufferCoord::new(2, 5)).unwrap(); // change 5
+        buffer.commit_undo_group();
+        buffer.undo(2).unwrap();
+        buffer.redo(2).unwrap();
+        buffer.undo(1).unwrap();
+        buffer.replace(BufferCoord::line(2), buffer.end_coord(), b"foo").unwrap(); // change 6
+        buffer.commit_undo_group();
+
+        let check = |expected: &[&str]| {
+            assert_eq!(buffer.line_count() as usize, expected.len());
+            for (i, line) in expected.iter().enumerate() {
+                assert_eq!(&buffer.line(i as LineCount)[..], line.as_bytes());
+            }
+        };
+        check(&["allo ?\n", "mais que fais la police\n", "foo\n"]);
+
+        buffer.move_to(3).unwrap();
+        check(&["allo ?\n", "mais que fais la police\n", "tchou\n", " hein ?\n", " youpi\n"]);
+
+        buffer.move_to(4).unwrap();
+        check(&["allo ?\n", "mais que fais la police\n", "mutch\n", " hein ?\n", " youpi\n"]);
+
+        buffer.move_to(HISTORY_ID_FIRST).unwrap();
+        check(&["allo ?\n", "mais que fais la police\n", " hein ?\n", " youpi\n"]);
+        assert!(!buffer.undo(1).unwrap());
+
+        buffer.move_to(5).unwrap();
+        assert!(!buffer.redo(1).unwrap());
+
+        buffer.move_to(6).unwrap();
+        assert!(!buffer.redo(1).unwrap());
+    }
+
+    // Properties ------------------------------------------------------------
+
+    fn check_lines_invariant(buffer: &Buffer) {
+        let lines = buffer.lines();
+        assert!(!lines.is_empty());
+        for line in lines.iter() {
+            assert_eq!(line.last(), Some(&b'\n'));
+            assert!(!line[..line.len() - 1].contains(&b'\n'));
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    enum Edit {
+        Insert(usize, Vec<u8>),
+        Erase(usize, usize),
+        Replace(usize, usize, Vec<u8>),
+        Commit,
+    }
+
+    fn edit() -> impl hegel::PrintableGenerator<Edit> {
+        let offset = || gs::integers::<usize>().max_value(200);
+        hegel::one_of!(
+            gs::tuples!(offset(), text()).map(|(o, t)| Edit::Insert(o, t)),
+            gs::tuples!(offset(), offset()).map(|(a, b)| Edit::Erase(a, b)),
+            gs::tuples!(offset(), offset(), text()).map(|(a, b, t)| Edit::Replace(a, b, t)),
+            gs::just(Edit::Commit),
+        )
+    }
+
+    /// Apply `edit` to the buffer, with offsets wrapped into the current
+    /// content, and to a byte model following the documented Buffer contract.
+    /// Returns the updated model.
+    fn apply_edit(buffer: &Buffer, model: &[u8], edit: &Edit) -> Vec<u8> {
+        let len = model.len();
+        let mut res = model.to_vec();
+        match edit {
+            Edit::Insert(o, t) => {
+                let o = o % (len + 1);
+                let pos = coord_of(model, o);
+                let range = buffer.insert(pos, t).unwrap();
+                if t.is_empty() {
+                    assert_eq!(range, BufferRange::new(pos, pos));
+                    return res;
+                }
+                // inserting at the end adds a missing final end of line
+                let mut real = t.clone();
+                if o == len && real.last() != Some(&b'\n') {
+                    real.push(b'\n');
+                }
+                res.splice(o..o, real.iter().copied());
+                assert_eq!(range, BufferRange::new(pos, coord_of(&res, o + real.len())));
+            }
+            Edit::Erase(a, b) => {
+                let (a, b) = (a % (len + 1), b % (len + 1));
+                let (a, b) = (a.min(b), a.max(b));
+                let begin = coord_of(model, a);
+                // the final end of line is only erased when erasing whole lines
+                let b = if b == len && (begin.column != 0 || a == 0) { len - 1 } else { b };
+                let pos = buffer.erase(begin, coord_of(model, b.max(a))).unwrap();
+                assert_eq!(pos, begin);
+                if a < b {
+                    res.drain(a..b);
+                }
+            }
+            Edit::Replace(a, b, t) => {
+                let (a, b) = (a % (len + 1), b % (len + 1));
+                let (a, b) = (a.min(b), a.max(b));
+                let begin = coord_of(model, a);
+                buffer.replace(begin, coord_of(model, b), t).unwrap();
+                // replace is erase then insert, except that replacing up to
+                // the end with a string ending in eol keeps a single final eol
+                let mut erased = model.to_vec();
+                let mut ins = t.clone();
+                if b == len && t.last() == Some(&b'\n') {
+                    if a < len - 1 {
+                        erased.drain(a..len - 1);
+                    }
+                    ins.pop();
+                } else {
+                    let e = if b == len && (begin.column != 0 || a == 0) { len - 1 } else { b };
+                    if a < e {
+                        erased.drain(a..e);
+                    }
+                }
+                if model[a..b] == t[..] {
+                    return res;
+                }
+                let o = a.min(erased.len());
+                if !ins.is_empty() && o == erased.len() && ins.last() != Some(&b'\n') {
+                    ins.push(b'\n');
+                }
+                erased.splice(o..o, ins);
+                res = erased;
+            }
+            Edit::Commit => buffer.commit_undo_group(),
+        }
+        res
+    }
+
+    #[hegel::test(test_cases = 500)]
+    fn edits_follow_byte_model(tc: TestCase) {
+        let initial = tc.draw(text());
+        let buffer = make_buffer(&initial);
+        let mut model = buffer_content(&buffer);
+        for edit in tc.draw(gs::vecs(edit()).max_size(15)) {
+            model = apply_edit(&buffer, &model, &edit);
+            check_lines_invariant(&buffer);
+            assert_eq!(buffer_content(&buffer), model, "after {edit:?}");
+        }
+    }
+
+    #[hegel::test(test_cases = 500)]
+    fn undo_all_then_redo_all_roundtrips(tc: TestCase) {
+        let initial = tc.draw(text());
+        let buffer = make_buffer(&initial);
+        let mut model = buffer_content(&buffer);
+        // content after each history node
+        let mut states = vec![model.clone()];
+        for edit in tc.draw(gs::vecs(edit()).max_size(15)) {
+            model = apply_edit(&buffer, &model, &edit);
+            if matches!(edit, Edit::Commit) {
+                states.push(model.clone());
+            }
+        }
+        buffer.commit_undo_group();
+        states.push(model.clone());
+        states.dedup();
+
+        // every non empty undo group is one step
+        while buffer.undo(1).unwrap() {
+            check_lines_invariant(&buffer);
+        }
+        assert_eq!(buffer_content(&buffer), states[0]);
+        assert_eq!(buffer.current_history_id(), HISTORY_ID_FIRST);
+        while buffer.redo(1).unwrap() {
+            check_lines_invariant(&buffer);
+        }
+        assert_eq!(buffer_content(&buffer), model);
+    }
+
+    #[hegel::test(test_cases = 500)]
+    fn undo_steps_visit_committed_states(tc: TestCase) {
+        let initial = tc.draw(text());
+        let buffer = make_buffer(&initial);
+        let mut model = buffer_content(&buffer);
+        let mut states = vec![model.clone()];
+        for edit in tc.draw(gs::vecs(edit()).max_size(15)) {
+            let had_group = !buffer.current_undo_group().is_empty();
+            model = apply_edit(&buffer, &model, &edit);
+            if matches!(edit, Edit::Commit) && had_group {
+                states.push(model.clone());
+            }
+        }
+        if !buffer.current_undo_group().is_empty() {
+            buffer.commit_undo_group();
+            states.push(model.clone());
+        }
+        for expected in states.iter().rev().skip(1) {
+            assert!(buffer.undo(1).unwrap());
+            assert_eq!(&buffer_content(&buffer), expected);
+        }
+        assert!(!buffer.undo(1).unwrap());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn coordinate_arithmetic_matches_offsets(tc: TestCase) {
+        let initial = tc.draw(text());
+        let buffer = make_buffer(&initial);
+        let content = buffer_content(&buffer);
+        let len = content.len();
+        let a = tc.draw(gs::integers::<usize>().max_value(len));
+        let b = tc.draw(gs::integers::<usize>().min_value(a).max_value(len));
+        let (ca, cb) = (coord_of(&content, a), coord_of(&content, b));
+        assert!(buffer.is_valid(ca) && buffer.is_valid(cb));
+        assert_eq!(buffer.is_end(cb), b == len);
+        assert_eq!(buffer.distance(ca, cb), (b - a) as ByteCount);
+        assert_eq!(buffer.distance(cb, ca), -((b - a) as ByteCount));
+        assert_eq!(buffer.advance(ca, (b - a) as ByteCount), cb);
+        assert_eq!(buffer.advance(cb, -((b - a) as ByteCount)), ca);
+        assert_eq!(buffer.string(ca, cb), &content[a..b]);
+        if a < len {
+            assert_eq!(buffer.next(ca), coord_of(&content, a + 1));
+            assert_eq!(buffer.byte_at(ca), content[a]);
+        }
+        if a > 0 {
+            assert_eq!(buffer.prev(ca), coord_of(&content, a - 1));
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn char_next_and_prev_step_over_codepoints(tc: TestCase) {
+        let initial = tc.draw(text());
+        let buffer = make_buffer(&initial);
+        let content = buffer_content(&buffer);
+        // text() is valid utf8, so codepoint starts are std char boundaries
+        let s = std::str::from_utf8(&content).unwrap();
+        let starts: Vec<usize> = s.char_indices().map(|(i, _)| i).chain([content.len()]).collect();
+        let i = tc.draw(gs::integers::<usize>().max_value(starts.len() - 2));
+        let (here, next) = (coord_of(&content, starts[i]), coord_of(&content, starts[i + 1]));
+        assert_eq!(buffer.char_next(here), next);
+        if starts[i + 1] < content.len() {
+            assert_eq!(buffer.char_prev(next), here);
+        }
+    }
+
+    #[hegel::test(test_cases = 500)]
+    fn changes_since_replays_to_same_line_count(tc: TestCase) {
+        // Each change's line delta (insert adds end-begin lines, erase
+        // removes them) sums to the total line count difference.
+        let initial = tc.draw(text());
+        let buffer = make_buffer(&initial);
+        let timestamp = buffer.timestamp();
+        let lines_before = buffer.line_count();
+        let mut model = buffer_content(&buffer);
+        for edit in tc.draw(gs::vecs(edit()).max_size(15)) {
+            model = apply_edit(&buffer, &model, &edit);
+        }
+        let delta: LineCount = buffer
+            .changes_since(timestamp)
+            .iter()
+            .map(|c| match c.type_ {
+                ChangeType::Insert => c.end.line - c.begin.line,
+                ChangeType::Erase => c.begin.line - c.end.line,
+            })
+            .sum();
+        assert_eq!(lines_before + delta, buffer.line_count());
+        assert_eq!(buffer.changes_since(buffer.timestamp()), vec![]);
+    }
+
+    #[test]
+    fn make_lines_adds_final_eol() {
+        assert_eq!(make_lines(b"").len(), 1);
+        assert_eq!(&make_lines(b"a")[0][..], b"a\n");
+    }
+}

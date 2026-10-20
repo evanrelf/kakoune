@@ -243,16 +243,20 @@ impl<'a> RankedMatch<'a> {
             m.flags |= MatchFlags::BaseName;
             let base = &candidate[base_start..];
             if base.len() >= query.len() {
+                // std::equal over utf8::iterators: decode at each position,
+                // step to the next character start
                 let mut eq = true;
                 let mut qi = 0;
                 let mut ci = 0;
                 while qi < query.len() {
-                    let q = utf8::read_codepoint(query, &mut qi);
-                    let c = utf8::read_codepoint(base, &mut ci);
+                    let q = utf8::codepoint_at(query, qi);
+                    let c = utf8::codepoint_at(base, ci);
                     if !smartcase_eq(c, q) {
                         eq = false;
                         break;
                     }
+                    qi = utf8::next(query, qi);
+                    ci = utf8::next(base, ci);
                 }
                 if eq {
                     m.flags |= MatchFlags::Prefix;
@@ -456,5 +460,291 @@ mod tests {
     #[test]
     fn test_used_letters() {
         assert_eq!(used_letters(b"abcd"), letters_to_lower(used_letters(b"abcdABCD")));
+    }
+
+    use crate::unicode::init_test_locale;
+    use hegel::generators as gs;
+    use hegel::{Generator as _, TestCase};
+
+    fn ascii_word(max: usize) -> impl hegel::PrintableGenerator<Vec<u8>> {
+        gs::vecs(gs::sampled_from(b"abAB_-/. x".to_vec())).max_size(max)
+    }
+
+    /// Candidates: mostly path/identifier like ascii, sometimes arbitrary
+    fn candidate() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(
+            ascii_word(12),
+            gs::vecs(gs::sampled_from(vec![&b"a"[..], b"B", b"/", b"_", b"\xc3\xa9", b"\xc3\x89", b"\x00", b"\x80"]))
+                .max_size(8)
+                .map(|v| v.concat()),
+            gs::binary().max_size(12),
+        )
+    }
+
+    fn query() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(ascii_word(4), candidate())
+    }
+
+    /// Smart case subsequence on ascii: lowercase query letters match either
+    /// case, everything else matches exactly.
+    fn ascii_smartcase_subsequence(candidate: &[u8], query: &[u8]) -> bool {
+        let mut it = candidate.iter();
+        query.iter().all(|&q| it.any(|&c| if q.is_ascii_lowercase() { c.to_ascii_lowercase() == q } else { c == q }))
+    }
+
+    // Flags computed by the C++ code on invalid utf8: query characters are
+    // iterated with utf8::iterator (stepping over stray continuation bytes)
+    // for the SingleWord and base name Prefix checks.
+    #[test]
+    fn flags_on_invalid_utf8_match_cpp() {
+        init_test_locale();
+        let flags = |q: &[u8], c: &[u8]| RankedMatch::new(c, q).flags;
+        assert_eq!(flags(b"\xc3\xe9", b"\xc3\xa9\xc9"), MatchFlags::SingleWord | MatchFlags::BaseName);
+        assert_eq!(
+            flags(b"\xc3\xa9\x80", b"\x80\x41.\xc3\xa9\x80-\xc3"),
+            MatchFlags::SingleWord | MatchFlags::Contiguous | MatchFlags::BaseName
+        );
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn matches_iff_smartcase_subsequence(tc: TestCase) {
+        let c = tc.draw(ascii_word(12));
+        let q = tc.draw(ascii_word(5));
+        let expected = q.is_empty() || (q.len() <= c.len() && ascii_smartcase_subsequence(&c, &q));
+        assert_eq!(RankedMatch::new(&c, &q).is_match(), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn candidate_matches_itself_fully(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(candidate().filter(|c| !c.is_empty()));
+        let m = RankedMatch::new(&c, &c);
+        assert!(m.is_match());
+        assert!(m.flags.has(MatchFlags::FullMatch));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn full_match_flag_iff_equal(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(candidate());
+        let q = tc.draw(query().filter(|q| !q.is_empty()));
+        let m = RankedMatch::new(&c, &q);
+        if m.is_match() {
+            assert_eq!(m.flags.has(MatchFlags::FullMatch), c == q);
+        }
+    }
+
+    fn valid_text() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(gs::text(), gs::text().alphabet("aAbB/_.-éÉ")).map(String::into_bytes)
+    }
+
+    // Restricted to valid utf8: decoding invalid utf8 depends on the
+    // following bytes (a lone "\xC0" decodes differently from "\xC0\x00"),
+    // so with invalid text a prefix may fail to match (as in C++).
+    #[hegel::test(test_cases = 1000)]
+    fn exact_prefix_sets_prefix_and_contiguous(tc: TestCase) {
+        init_test_locale();
+        let q = tc.draw(valid_text().filter(|q| !q.is_empty()));
+        let rest = tc.draw(valid_text());
+        let c = [&q[..], &rest].concat();
+        let m = RankedMatch::new(&c, &q);
+        assert!(m.is_match());
+        assert!(m.flags.has(MatchFlags::Prefix));
+        assert!(m.flags.has(MatchFlags::Contiguous));
+    }
+
+    // The used letters precheck is a pure optimisation for ascii text: it
+    // never changes the result.
+    #[hegel::test(test_cases = 1000)]
+    fn letters_precheck_agrees_on_ascii(tc: TestCase) {
+        let c = tc.draw(ascii_word(12));
+        let q = tc.draw(ascii_word(5));
+        let fast = RankedMatch::with_letters(&c, used_letters(&c), &q, used_letters(&q));
+        let slow = RankedMatch::new(&c, &q);
+        assert_eq!(fast.is_match(), slow.is_match());
+    }
+
+    // Beyond ascii, towlower may map a non ascii candidate char to an ascii
+    // query letter (e.g. KELVIN SIGN to 'k') which the precheck does not
+    // know about (faithful C++ behaviour), so it can only reject more.
+    #[hegel::test(test_cases = 1000)]
+    fn letters_precheck_only_rejects(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(candidate());
+        let q = tc.draw(query());
+        let fast = RankedMatch::with_letters(&c, used_letters(&c), &q, used_letters(&q));
+        if fast.is_match() {
+            let slow = RankedMatch::new(&c, &q);
+            assert!(slow.is_match());
+            assert!(!fast.less(&slow) && !slow.less(&fast));
+        }
+    }
+
+    /// Query and candidates matching it, built by interleaving the query's
+    /// characters with filler. NUL bytes are excluded: C++ operator< orders
+    /// '/' as codepoint 0, making it equivalent to NUL, which breaks the
+    /// strict weak ordering ("\0" ~ "/" ~ "\0a" but "\0" < "\0a"). This is
+    /// faithful to the C++ code (checked against it), and only matters for
+    /// candidates containing NUL.
+    /// Candidates are also valid utf8: invalid sequences decode differently
+    /// depending on the following bytes ("\xCB" vs "\xCB\x06" = U+02C6),
+    /// which makes the C++ ordering intransitive too ("\x01" < "\xCB" <
+    /// "\xCB\x06" < "\x01", checked against the C++ code).
+    fn query_and_matches(tc: &TestCase, n: usize) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let no_nul = |v: &Vec<u8>| !v.contains(&0);
+        let q = tc.draw(hegel::one_of!(gs::just(Vec::new()), valid_text().filter(|q| q.len() <= 4)));
+        let qchars: Vec<&[u8]> = {
+            let mut res = Vec::new();
+            let mut pos = 0;
+            while pos < q.len() {
+                let next = crate::utf8::next(&q, pos);
+                res.push(&q[pos..next]);
+                pos = next;
+            }
+            res
+        };
+        let cands = (0..n)
+            .map(|_| {
+                if q.is_empty() {
+                    return tc.draw(valid_text().filter(no_nul));
+                }
+                let mut c = Vec::new();
+                for qc in &qchars {
+                    let filler = hegel::one_of!(gs::text().max_size(3), gs::text().alphabet("aAbB/_.-éÉ").max_size(3));
+                    c.extend(tc.draw(filler.map(String::into_bytes).filter(no_nul)));
+                    c.extend_from_slice(qc);
+                }
+                c.extend(tc.draw(valid_text().filter(no_nul)));
+                c
+            })
+            .collect();
+        (q, cands)
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn interleaved_candidates_match(tc: TestCase) {
+        init_test_locale();
+        let (q, cands) = query_and_matches(&tc, 1);
+        assert!(RankedMatch::new(&cands[0], &q).is_match());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn ordering_is_irreflexive(tc: TestCase) {
+        init_test_locale();
+        let (q, c) = query_and_matches(&tc, 1);
+        let m = RankedMatch::new(&c[0], &q);
+        assert!(!m.less(&m));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn ordering_is_asymmetric(tc: TestCase) {
+        init_test_locale();
+        let (q, c) = query_and_matches(&tc, 2);
+        let (ma, mb) = (RankedMatch::new(&c[0], &q), RankedMatch::new(&c[1], &q));
+        assert!(!(ma.less(&mb) && mb.less(&ma)));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn ordering_is_transitive(tc: TestCase) {
+        init_test_locale();
+        let (q, c) = query_and_matches(&tc, 3);
+        let (ma, mb, mc) = (RankedMatch::new(&c[0], &q), RankedMatch::new(&c[1], &q), RankedMatch::new(&c[2], &q));
+        if ma.less(&mb) && mb.less(&mc) {
+            assert!(ma.less(&mc));
+        }
+    }
+
+    // Strict weak ordering: equivalence (neither is less) is transitive
+    #[hegel::test(test_cases = 1000)]
+    fn ordering_equivalence_is_transitive(tc: TestCase) {
+        init_test_locale();
+        let (q, c) = query_and_matches(&tc, 3);
+        let (ma, mb, mc) = (RankedMatch::new(&c[0], &q), RankedMatch::new(&c[1], &q), RankedMatch::new(&c[2], &q));
+        let equiv = |x: &RankedMatch, y: &RankedMatch| !x.less(y) && !y.less(x);
+        if equiv(&ma, &mb) && equiv(&mb, &mc) {
+            assert!(equiv(&ma, &mc));
+        }
+    }
+
+    // Only identical candidates are equivalent
+    #[hegel::test(test_cases = 1000)]
+    fn equivalent_matches_have_equal_candidates(tc: TestCase) {
+        init_test_locale();
+        let (q, c) = query_and_matches(&tc, 2);
+        let (ma, mb) = (RankedMatch::new(&c[0], &q), RankedMatch::new(&c[1], &q));
+        if !ma.less(&mb) && !mb.less(&ma) {
+            assert_eq!(c[0], c[1]);
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn sort_orders_matches(tc: TestCase) {
+        init_test_locale();
+        let n = tc.draw(gs::integers::<usize>().max_value(20));
+        let (q, cands) = query_and_matches(&tc, n);
+        let mut matches: Vec<RankedMatch> = cands.iter().map(|c| RankedMatch::new(c, &q)).collect();
+        sort_matches(&mut matches);
+        for w in matches.windows(2) {
+            assert!(!w[1].less(&w[0]));
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn input_sequence_number_breaks_ties(tc: TestCase) {
+        init_test_locale();
+        let (q, c) = query_and_matches(&tc, 1);
+        let i = tc.draw(gs::integers::<usize>().max_value(100));
+        let j = tc.draw(gs::integers::<usize>().max_value(100));
+        let (mut a, mut b) = (RankedMatch::new(&c[0], &q), RankedMatch::new(&c[0], &q));
+        a.set_input_sequence_number(i);
+        b.set_input_sequence_number(j);
+        assert_eq!(a.less(&b), i < j);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn word_boundary_matches_bounded_by_query(tc: TestCase) {
+        init_test_locale();
+        let c = tc.draw(candidate());
+        let q = tc.draw(query());
+        let count = count_word_boundaries_match(&c, &q);
+        // each query character (as visited by a utf8 iterator from the start,
+        // which may be a continuation byte) is matched at most once
+        let mut steps = 0;
+        let mut pos = 0;
+        while pos < q.len() {
+            pos = crate::utf8::next(&q, pos);
+            steps += 1;
+        }
+        assert!(count >= 0 && count <= steps);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn word_splitter_yields_maximal_ascii_words(tc: TestCase) {
+        let text = tc.draw(hegel::one_of!(
+            ascii_word(30),
+            gs::vecs(gs::sampled_from(vec![&b"a"[..], b"_", b" ", b"-", &[b'b'; 101]])).max_size(6).map(|v| v.concat())
+        ));
+        let extra: &[Codepoint] = &['_' as u32];
+        let words: Vec<&[u8]> = WordSplitter::new(&text, extra).collect();
+        let expected: Vec<&[u8]> = text
+            .split(|c| !(c.is_ascii_alphanumeric() || *c == b'_'))
+            .filter(|w| !w.is_empty() && w.len() <= MAX_WORD_LEN)
+            .collect();
+        assert_eq!(words, expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn used_letters_records_each_byte_class(tc: TestCase) {
+        let s = tc.draw(gs::binary());
+        let letters = used_letters(&s);
+        for c in b'a'..=b'z' {
+            assert_eq!(letters & (1 << (c - b'a')) != 0, s.contains(&c));
+            assert_eq!(letters & (1 << (c - b'a' + 26)) != 0, s.contains(&c.to_ascii_uppercase()));
+        }
+        assert_eq!(letters & (1 << 53) != 0, s.contains(&b'_'));
+        assert_eq!(letters & (1 << 54) != 0, s.contains(&b'-'));
+        assert_eq!(letters & (1 << 63) != 0, s.iter().any(|c| !c.is_ascii_alphabetic() && !b"_-".contains(c)));
+        assert_eq!(letters_to_lower(letters) & UPPER_MASK, 0);
+        assert_eq!(letters_to_lower(letters), used_letters(&s.to_ascii_lowercase()));
     }
 }

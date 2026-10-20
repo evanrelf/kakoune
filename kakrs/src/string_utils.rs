@@ -76,20 +76,19 @@ pub fn trim_indent(s: &[u8]) -> Result<Vec<u8>> {
         s = &s[1..];
     }
     while let Some(&last) = s.last() {
-        if is_blank(last as Codepoint) {
+        // C++ converts the (signed) char to a Codepoint, so bytes >= 0x80
+        // (such as the 0xA0 ending "à") are never blanks.
+        if is_blank(last as i8 as i32 as Codepoint) {
             s = &s[..s.len() - 1];
         } else {
             break;
         }
     }
+    // C++ walks a utf8::iterator, whose increment moves to the next
+    // character start (skipping any stray continuation bytes)
     let mut it = 0;
-    while it < s.len() {
-        let mut next = it;
-        let cp = utf8::read_codepoint(s, &mut next);
-        if !is_horizontal_blank(cp) {
-            break;
-        }
-        it = next;
+    while it < s.len() && is_horizontal_blank(utf8::codepoint_at(s, it)) {
+        it = utf8::next(s, it);
     }
     let indent = &s[..it];
     let mut res = Vec::new();
@@ -398,12 +397,23 @@ pub fn split_after(s: &[u8], separator: u8) -> Vec<&[u8]> {
 }
 
 /// Equivalent of `str | split<StringView>(sep, '\\') | transform(unescape<sep, '\\'>) | static_gather<error, N>()`
+///
+/// Like static_gather, the error receives the index at which gathering
+/// failed: k - 1 when only k < n elements are available, max(n, 1) when there
+/// are too many. static_gather dereferences the begin iterator even for an
+/// empty input, which yields a single empty element.
 pub fn split_unescape_n(s: &[u8], separator: u8, n: usize, err: impl FnOnce(usize) -> Error) -> Result<Vec<Vec<u8>>> {
-    let parts = split_escaped(s, separator, Some(b'\\'));
-    if parts.len() != n {
-        return Err(err(parts.len()));
+    let mut parts = split_escaped(s, separator, Some(b'\\'));
+    if parts.is_empty() {
+        parts.push(&s[..0]);
     }
-    Ok(parts.into_iter().map(|p| unescape(p, &[separator, b'\\'], b'\\')).collect())
+    if parts.len() < n {
+        return Err(err(parts.len() - 1));
+    }
+    if parts.len() > n.max(1) {
+        return Err(err(n.max(1)));
+    }
+    Ok(parts.into_iter().take(n).map(|p| unescape(p, &[separator, b'\\'], b'\\')).collect())
 }
 
 pub fn to_string_i(v: impl std::fmt::Display) -> Vec<u8> {
@@ -448,5 +458,487 @@ mod tests {
         assert_eq!(split_escaped(br"a\:b:c", b':', Some(b'\\')), vec![&br"a\:b"[..], b"c"]);
         assert_eq!(split_after(b"a\nb\n", b'\n'), vec![&b"a\n"[..], b"b\n"]);
         assert_eq!(split_after(b"a\nb", b'\n'), vec![&b"a\n"[..], b"b"]);
+    }
+
+    use crate::unicode::init_test_locale;
+    use hegel::generators as gs;
+    use hegel::{Generator as _, TestCase};
+
+    /// Bytes drawn either freely or from a small alphabet rich in separators
+    /// and escapes, so that interesting interactions are frequent.
+    fn bytes_over(alphabet: &[u8]) -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(gs::binary(), gs::vecs(gs::sampled_from(alphabet.to_vec())))
+    }
+
+    fn special_bytes() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        bytes_over(b"ab:|=\\' \n\t")
+    }
+
+    fn separator() -> impl hegel::PrintableGenerator<u8> {
+        hegel::one_of!(gs::sampled_from(b":|= \n".to_vec()), gs::integers::<u8>().filter(|&c| c != b'\\'))
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn unescape_inverts_escape(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let mut chars = tc.draw(gs::vecs(gs::sampled_from(b":|=\\'".to_vec())).max_size(4));
+        let esc = tc.draw(gs::sampled_from(b"\\%".to_vec()));
+        // as in every Kakoune use, the escape character is escaped too
+        chars.push(esc);
+        assert_eq!(unescape(&escape(&s, &chars, esc), &chars, esc), s);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn escape_prefixes_each_special_char(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let chars = tc.draw(bytes_over(b":|=\\'"));
+        let esc = tc.draw(gs::integers::<u8>());
+        let mut expected = Vec::new();
+        for &c in &s {
+            if chars.contains(&c) {
+                expected.push(esc);
+            }
+            expected.push(c);
+        }
+        assert_eq!(escape(&s, &chars, esc), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn unescape_without_escape_char_is_identity(tc: TestCase) {
+        let esc = tc.draw(gs::sampled_from(b"\\%".to_vec()));
+        let s = tc.draw(special_bytes().filter(move |s| !s.contains(&esc)));
+        let chars = tc.draw(special_bytes());
+        assert_eq!(unescape(&s, &chars, esc), s);
+    }
+
+    /// C++ quirk of join(): the joiner is only added once the result is non
+    /// empty, so leading empty elements vanish.
+    fn skip_leading_empty(parts: &[Vec<u8>]) -> &[Vec<u8>] {
+        let first = parts.iter().position(|p| !p.is_empty()).unwrap_or(parts.len());
+        &parts[first..]
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn join_str_is_std_join_without_leading_empties(tc: TestCase) {
+        let parts = tc.draw(gs::vecs(special_bytes()));
+        let joiner = tc.draw(special_bytes());
+        assert_eq!(join_str(&parts, &joiner), skip_leading_empty(&parts).join(&joiner[..]));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn join_unescaped_is_std_join_without_leading_empties(tc: TestCase) {
+        let parts = tc.draw(gs::vecs(special_bytes()));
+        let sep = tc.draw(separator());
+        assert_eq!(join(&parts, sep, false), skip_leading_empty(&parts).join(&sep));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn split_escaped_unescape_inverts_join(tc: TestCase) {
+        let parts = tc.draw(gs::vecs(special_bytes()).min_size(1));
+        let sep = tc.draw(separator());
+        let joined = join(&parts, sep, true);
+        let split: Vec<Vec<u8>> =
+            split_escaped(&joined, sep, Some(b'\\')).into_iter().map(|p| unescape(p, &[sep, b'\\'], b'\\')).collect();
+        // leading empty elements are lost by join (faithful C++ quirk)
+        assert_eq!(split, skip_leading_empty(&parts));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn split_matches_std_split(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let sep = tc.draw(separator());
+        let expected: Vec<&[u8]> = if s.is_empty() { vec![] } else { s.split(|&c| c == sep).collect() };
+        assert_eq!(split(&s, sep), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn split_escaped_parts_rejoin_to_input(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let sep = tc.draw(hegel::one_of!(separator(), gs::just(b'\\')));
+        let parts = split_escaped(&s, sep, Some(b'\\'));
+        assert_eq!(parts.join(&sep), s);
+    }
+
+    // A separator splits iff it is not escaped. When the separator is the
+    // escaper itself, a separator also escapes the following character
+    // (C++ ranges.hh SplitView quirk), which this model reproduces.
+    #[hegel::test(test_cases = 1000)]
+    fn split_escaped_splits_on_unescaped_separators_only(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let sep = tc.draw(hegel::one_of!(separator(), gs::just(b'\\')));
+        let parts = split_escaped(&s, sep, Some(b'\\'));
+        let mut expected_splits = 0;
+        let mut escaped = false;
+        for &c in &s {
+            if !escaped && c == sep {
+                expected_splits += 1;
+            }
+            escaped = !escaped && c == b'\\';
+        }
+        let expected_parts = if s.is_empty() { 0 } else { expected_splits + 1 };
+        assert_eq!(parts.len(), expected_parts);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn split_after_keeps_separators(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let sep = tc.draw(separator());
+        let parts = split_after(&s, sep);
+        assert_eq!(parts.concat(), s);
+        for (i, p) in parts.iter().enumerate() {
+            assert!(!p.is_empty());
+            let body = if i + 1 < parts.len() {
+                assert_eq!(p.last(), Some(&sep));
+                &p[..p.len() - 1]
+            } else if p.last() == Some(&sep) {
+                &p[..p.len() - 1]
+            } else {
+                &p[..]
+            };
+            assert!(!body.contains(&sep));
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn replace_matches_bstr(tc: TestCase) {
+        use bstr::ByteSlice;
+        let s = tc.draw(special_bytes());
+        // An empty pattern makes the C++ loop forever, it is a precondition.
+        let pattern = tc.draw(gs::vecs(gs::sampled_from(b"ab:'".to_vec())).min_size(1).max_size(3));
+        let replacement = tc.draw(special_bytes());
+        assert_eq!(replace(&s, &pattern, &replacement), s.replace(&pattern, &replacement));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_to_int_inverts_to_string(tc: TestCase) {
+        let i = tc.draw(gs::integers::<i32>());
+        assert_eq!(str_to_int(i.to_string().as_bytes()).unwrap(), i);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_to_int_ignores_leading_zeros(tc: TestCase) {
+        let i = tc.draw(gs::integers::<i32>().min_value(0));
+        let zeros = tc.draw(gs::integers::<usize>().max_value(5));
+        let neg = tc.draw(gs::booleans());
+        let s = format!("{}{}{}", if neg { "-" } else { "" }, "0".repeat(zeros), i);
+        assert_eq!(str_to_int_ifp(s.as_bytes()), Some(if neg { i.wrapping_neg() } else { i }));
+    }
+
+    // Overflow wraps modulo 2^32 like the C++ unsigned accumulator
+    #[hegel::test(test_cases = 1000)]
+    fn str_to_int_wraps_on_overflow(tc: TestCase) {
+        let digits = tc.draw(gs::vecs(gs::integers::<u8>().max_value(9)).min_size(1).max_size(30));
+        let s: Vec<u8> = digits.iter().map(|d| b'0' + d).collect();
+        let expected = digits.iter().fold(0u128, |acc, &d| (acc * 10 + d as u128) % (1u128 << 32)) as u32 as i32;
+        assert_eq!(str_to_int_ifp(&s), Some(expected));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_to_int_rejects_non_digits(tc: TestCase) {
+        let s = tc.draw(special_bytes().filter(|s| {
+            let body = s.strip_prefix(b"-").unwrap_or(s);
+            body.is_empty() || !body.iter().all(u8::is_ascii_digit)
+        }));
+        assert_eq!(str_to_int_ifp(&s), None);
+        assert_eq!(str_to_int(&s).unwrap_err().what(), [&s[..], b" is not a number"].concat());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn subsequence_match_is_subsequence(tc: TestCase) {
+        let s = tc.draw(bytes_over(b"abc"));
+        let sub = tc.draw(gs::vecs(gs::sampled_from(b"abc".to_vec())).max_size(5));
+        let mut it = s.iter();
+        let expected = sub.iter().all(|c| it.any(|x| x == c));
+        assert_eq!(subsequence_match(&s, &sub), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn subsequence_match_accepts_subsequences(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let keep = tc.draw(gs::vecs(gs::booleans()).min_size(s.len()).max_size(s.len()));
+        let sub: Vec<u8> = s.iter().zip(&keep).filter(|(_, k)| **k).map(|(c, _)| *c).collect();
+        assert!(subsequence_match(&s, &sub));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn double_up_doubles_each_special_char(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let chars = tc.draw(bytes_over(b"'%\""));
+        let expected: Vec<u8> =
+            s.iter().flat_map(|&c| if chars.contains(&c) { vec![c, c] } else { vec![c] }).collect();
+        assert_eq!(double_up(&s, &chars), expected);
+    }
+
+    /// Kakoune single quoted string parsing: '' is a literal quote
+    fn kak_unquote(s: &[u8]) -> Option<Vec<u8>> {
+        let inner = s.strip_prefix(b"'")?.strip_suffix(b"'")?;
+        let mut res = Vec::new();
+        let mut i = 0;
+        while i < inner.len() {
+            if inner[i] == b'\'' {
+                if inner.get(i + 1) != Some(&b'\'') {
+                    return None;
+                }
+                i += 1;
+            }
+            res.push(inner[i]);
+            i += 1;
+        }
+        Some(res)
+    }
+
+    /// POSIX shell word parsing restricted to single quotes and backslashes
+    fn sh_unquote(s: &[u8]) -> Option<Vec<u8>> {
+        let mut res = Vec::new();
+        let mut i = 0;
+        while i < s.len() {
+            match s[i] {
+                b'\'' => {
+                    let end = s[i + 1..].iter().position(|&c| c == b'\'')? + i + 1;
+                    res.extend_from_slice(&s[i + 1..end]);
+                    i = end + 1;
+                }
+                b'\\' => {
+                    res.push(*s.get(i + 1)?);
+                    i += 2;
+                }
+                c if c.is_ascii_whitespace() => return None,
+                c => {
+                    res.push(c);
+                    i += 1;
+                }
+            }
+        }
+        Some(res)
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn quote_is_kakoune_single_quoting(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        assert_eq!(kak_unquote(&quote(&s)), Some(s));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn shell_quote_is_posix_single_quoting(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        assert_eq!(sh_unquote(&shell_quote(&s)), Some(s));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn indent_prefixes_every_line(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let ind = tc.draw(bytes_over(b" \t>"));
+        let expected: Vec<u8> = split_after(&s, b'\n').iter().flat_map(|l| [&ind[..], l].concat()).collect();
+        assert_eq!(indent(&s, &ind), expected);
+    }
+
+    fn line_text() -> impl hegel::PrintableGenerator<String> {
+        gs::vecs(gs::sampled_from(vec!["a", "à", " ", "\t", "é", "-"]))
+            .min_size(1)
+            .map(|v| v.concat())
+            .filter(|l| !l.starts_with([' ', '\t']) && !l.ends_with([' ', '\t']))
+    }
+
+    /// Indentation: horizontal blanks, including multibyte ones, possibly
+    /// followed by stray continuation bytes (which the C++ utf8 iterator
+    /// skips over when moving to the next character).
+    fn indentation() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        gs::vecs(gs::sampled_from(vec![&b" "[..], b"\t", b"\t\x80", b"\xe2\x80\xa8", b"\xc2\xa0", b" \xbf\xbf"]))
+            .map(|v| v.concat())
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn trim_indent_removes_common_indent(tc: TestCase) {
+        let lines = tc.draw(gs::vecs(line_text()).min_size(1).max_size(5));
+        let ind = tc.draw(indentation());
+        // trailing blanks are trimmed byte per byte, so only ascii ones
+        let trailing = tc.draw(gs::optional(gs::text().alphabet(" \t\n")));
+        let mut text = b"\n".to_vec();
+        text.extend(join_str(lines.iter().map(|l| [&ind[..], l.as_bytes()].concat()), b"\n"));
+        if let Some(trailing) = trailing {
+            text.push(b'\n');
+            text.extend_from_slice(trailing.as_bytes());
+        }
+        assert_eq!(trim_indent(&text).unwrap(), lines.join("\n").as_bytes());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn trim_indent_rejects_inconsistent_indent(tc: TestCase) {
+        let first = tc.draw(line_text());
+        let second = tc.draw(line_text());
+        let ind = tc.draw(indentation().filter(|i| !i.is_empty()));
+        let text = [&b"\n"[..], &ind, first.as_bytes(), b"\n", second.as_bytes()].concat();
+        assert!(trim_indent(&text).is_err());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn expand_tabs_reaches_tab_stops(tc: TestCase) {
+        let line = tc.draw(bytes_over(b"ab \t"));
+        let line: Vec<u8> = line.into_iter().filter(|c| c.is_ascii_graphic() || *c == b' ' || *c == b'\t').collect();
+        // tabstop 0 divides by zero in C++ too; starting columns are never
+        // negative in Kakoune (C++ integer division would round towards 0)
+        let tabstop = tc.draw(gs::integers::<i32>().min_value(1).max_value(16));
+        let col = tc.draw(gs::integers::<i32>().min_value(0).max_value(100));
+        let mut expected = Vec::new();
+        let mut c = col;
+        for &b in &line {
+            if b == b'\t' {
+                let n = tabstop - c % tabstop;
+                expected.extend(std::iter::repeat_n(b' ', n as usize));
+                c += n;
+            } else {
+                expected.push(b);
+                c += 1;
+            }
+        }
+        assert_eq!(expand_tabs(&line, tabstop, col), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn expand_tabs_without_tabs_is_identity(tc: TestCase) {
+        let line = tc.draw(special_bytes().filter(|l| !l.contains(&b'\t')));
+        let tabstop = tc.draw(gs::integers::<i32>().min_value(1));
+        let col = tc.draw(gs::integers::<i32>().min_value(0).max_value(1000));
+        assert_eq!(expand_tabs(&line, tabstop, col), line);
+    }
+
+    fn printable_ascii() -> impl hegel::PrintableGenerator<String> {
+        gs::text().alphabet("abc XYZ-_/:'")
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn left_pad_matches_std_right_alignment(tc: TestCase) {
+        let s = tc.draw(printable_ascii());
+        let n = tc.draw(gs::integers::<i32>().min_value(0).max_value(20));
+        let truncated = &s[..s.len().min(n as usize)];
+        assert_eq!(left_pad(s.as_bytes(), n, ' ' as u32), format!("{:>w$}", truncated, w = n as usize).as_bytes());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn right_pad_matches_std_left_alignment(tc: TestCase) {
+        let s = tc.draw(printable_ascii());
+        let n = tc.draw(gs::integers::<i32>().min_value(0).max_value(20));
+        let truncated = &s[..s.len().min(n as usize)];
+        assert_eq!(right_pad(s.as_bytes(), n, ' ' as u32), format!("{:<w$}", truncated, w = n as usize).as_bytes());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn pad_has_requested_width_for_ascii(tc: TestCase) {
+        let s = tc.draw(printable_ascii());
+        let n = tc.draw(gs::integers::<i32>().min_value(0).max_value(20));
+        let c = tc.draw(gs::sampled_from(vec!['.' as u32, '0' as u32]));
+        assert_eq!(column_length(&left_pad(s.as_bytes(), n, c)), n);
+        assert_eq!(column_length(&right_pad(s.as_bytes(), n, c)), n);
+    }
+
+    // A negative size means no truncation (substr with a negative length).
+    // Sizes close to i32::MIN make `size - column_length` overflow, which is
+    // UB in C++ too (it would wrap to a huge padding), so they are excluded.
+    #[hegel::test(test_cases = 1000)]
+    fn pad_with_negative_size_is_identity(tc: TestCase) {
+        let s = tc.draw(valid_text());
+        let n = tc.draw(gs::integers::<i32>().min_value(-1_000_000).max_value(-1));
+        assert_eq!(left_pad(s.as_bytes(), n, ' ' as u32), s.as_bytes());
+        assert_eq!(right_pad(s.as_bytes(), n, ' ' as u32), s.as_bytes());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn substr_bytes_clamps_length(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let from = tc.draw(gs::integers::<usize>().max_value(s.len()));
+        let length = tc.draw(gs::integers::<isize>().min_value(-3).max_value(s.len() as isize + 3));
+        let end = if length < 0 { s.len() } else { (from + length as usize).min(s.len()) };
+        assert_eq!(substr(&s, from, length), &s[from..end]);
+    }
+
+    fn valid_text() -> impl hegel::PrintableGenerator<String> {
+        hegel::one_of!(gs::text(), gs::text().alphabet("aé€😀中\u{300}"))
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn substr_columns_is_column_range_on_ascii(tc: TestCase) {
+        let s = tc.draw(printable_ascii());
+        let from = tc.draw(gs::integers::<i32>().min_value(0).max_value(s.len() as i32 + 2));
+        let length = tc.draw(gs::integers::<i32>().min_value(-1).max_value(s.len() as i32 + 2));
+        let b = s.as_bytes();
+        let beg = (from as usize).min(b.len());
+        let end = if length < 0 { b.len() } else { (beg + length as usize).min(b.len()) };
+        assert_eq!(substr_columns(b, from, length), &b[beg..end]);
+        assert_eq!(byte_count_to_column(b, from), beg);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn unescape_chars_is_unescape_of_char_and_escape(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        let c = tc.draw(separator());
+        assert_eq!(unescape_chars(&s, c, b'\\'), unescape(&s, &[c, b'\\'], b'\\'));
+    }
+
+    // static_gather semantics: an empty input gathers as one empty element,
+    // errors carry the index where gathering stopped (k - 1 for k < n
+    // elements, n when there are too many)
+    #[hegel::test(test_cases = 1000)]
+    fn split_unescape_n_gathers_exactly_n(tc: TestCase) {
+        let parts = tc.draw(gs::vecs(special_bytes().filter(|p| !p.is_empty())).max_size(5));
+        let sep = tc.draw(separator());
+        let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
+        let joined = join(&parts, sep, true);
+        let available = if parts.is_empty() { vec![Vec::new()] } else { parts.clone() };
+        match split_unescape_n(&joined, sep, n, |got| Error::runtime(format!("{got}"))) {
+            Ok(res) => assert_eq!(res, available),
+            Err(e) => {
+                let k = available.len();
+                assert_ne!(k, n);
+                let expected = if k < n { k - 1 } else { n };
+                assert_eq!(e.what(), expected.to_string().as_bytes());
+            }
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn quoter_dispatches_on_quoting(tc: TestCase) {
+        let s = tc.draw(special_bytes());
+        assert_eq!(quoter(Quoting::Raw)(&s), s);
+        assert_eq!(quoter(Quoting::Kakoune)(&s), quote(&s));
+        assert_eq!(quoter(Quoting::Shell)(&s), shell_quote(&s));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn substr_chars_matches_std(tc: TestCase) {
+        let s = tc.draw(valid_text());
+        let count = s.chars().count() as i32;
+        let from = tc.draw(gs::integers::<i32>().min_value(0).max_value(count + 2));
+        let length = tc.draw(gs::integers::<i32>().min_value(-1).max_value(count + 2));
+        let expected: String =
+            s.chars().skip(from as usize).take(if length < 0 { usize::MAX } else { length as usize }).collect();
+        assert_eq!(substr_chars(s.as_bytes(), from, length), expected.as_bytes());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn char_at_matches_std(tc: TestCase) {
+        let s = tc.draw(valid_text());
+        tc.assume(!s.is_empty());
+        let count = s.chars().count();
+        let i = tc.draw(gs::integers::<usize>().max_value(count - 1));
+        assert_eq!(char_at(s.as_bytes(), i as i32), s.chars().nth(i).unwrap() as u32);
+        assert_eq!(byte_count_to_char(s.as_bytes(), i as i32), s.char_indices().nth(i).unwrap().0);
+        assert_eq!(char_length(s.as_bytes()), count as i32);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn string_of_cp_repeats_encoding(tc: TestCase) {
+        init_test_locale();
+        let cp = tc.draw(gs::characters()) as u32;
+        let count = tc.draw(gs::integers::<i32>().min_value(-3).max_value(10));
+        assert_eq!(string_of_cp(cp, count), utf8::encode(cp).repeat(count.max(0) as usize));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn string_of_cp_cols_repeats_to_fill_columns(tc: TestCase) {
+        init_test_locale();
+        let cp = tc.draw(gs::characters()) as u32;
+        let cols = tc.draw(gs::integers::<i32>().min_value(-3).max_value(10));
+        let width = codepoint_width(cp).max(1);
+        assert_eq!(string_of_cp_cols(cp, cols), utf8::encode(cp).repeat((cols / width).max(0) as usize));
     }
 }

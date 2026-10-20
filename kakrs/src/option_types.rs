@@ -600,4 +600,330 @@ mod tests {
         map.insert(b"b:z".to_vec(), b"30".to_vec());
         check(map, &["foo=10", "b\\=r=20", "b:z=30"]);
     }
+
+    use crate::string_utils::{quote, shell_quote};
+    use hegel::generators as gs;
+    use hegel::{Generator as _, TestCase};
+
+    fn bytes() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        hegel::one_of!(gs::binary(), gs::vecs(gs::sampled_from(b"ab =|\\' \n:".to_vec())))
+    }
+
+    fn no_backslash() -> impl hegel::PrintableGenerator<Vec<u8>> {
+        bytes().filter(|s| !s.contains(&b'\\'))
+    }
+
+    fn roundtrip<T: OptionType + std::fmt::Debug>(v: &T) -> T {
+        T::from_strings(&v.to_strings()).unwrap()
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn int_roundtrip(tc: TestCase) {
+        let i = tc.draw(gs::integers::<i32>());
+        assert_eq!(i.to_strings(), vec![i.to_string().into_bytes()]);
+        assert_eq!(roundtrip(&i), i);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn int_add_then_remove_restores(tc: TestCase) {
+        let i = tc.draw(gs::integers::<i32>());
+        let d = tc.draw(gs::integers::<i32>());
+        let mut v = i;
+        assert_eq!(v.add_from_strings(&[d.to_string().into_bytes()]).unwrap(), d != 0);
+        assert_eq!(v, i.wrapping_add(d));
+        assert_eq!(v.remove_from_strings(&[d.to_string().into_bytes()]).unwrap(), d != 0);
+        assert_eq!(v, i);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn int_rejects_non_numbers(tc: TestCase) {
+        let s = tc.draw(bytes().filter(|s| crate::string_utils::str_to_int_ifp(s).is_none()));
+        assert!(i32::from_strings(&[s]).is_err());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn usize_is_parsed_as_int(tc: TestCase) {
+        let i = tc.draw(gs::integers::<i32>());
+        assert_eq!(usize::elem_from_string(i.to_string().as_bytes()).unwrap(), i as usize);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn bool_roundtrip(tc: TestCase) {
+        let b = tc.draw(gs::booleans());
+        assert_eq!(roundtrip(&b), b);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn bool_accepts_only_true_yes_false_no(tc: TestCase) {
+        let s = tc.draw(bytes());
+        let expected = match &s[..] {
+            b"true" | b"yes" => Some(true),
+            b"false" | b"no" => Some(false),
+            _ => None,
+        };
+        assert_eq!(bool::from_strings(&[s]).ok(), expected);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn single_value_options_need_exactly_one_string(tc: TestCase) {
+        let strs = tc.draw(gs::vecs(bytes()).filter(|v| v.len() != 1).map(|v| v.into_iter().take(3).collect::<Vec<_>>()));
+        assert!(<Vec<u8> as OptionType>::from_strings(&strs).is_err());
+        assert!(bool::from_strings(&strs).is_err());
+        assert!(i32::from_strings(&strs).is_err());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_roundtrip(tc: TestCase) {
+        let s = tc.draw(bytes());
+        assert_eq!(roundtrip(&s), s);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_quoting(tc: TestCase) {
+        let s = tc.draw(bytes());
+        assert_eq!(s.to_string_q(Quoting::Raw), s);
+        assert_eq!(s.to_string_q(Quoting::Kakoune), quote(&s));
+        assert_eq!(s.to_string_q(Quoting::Shell), shell_quote(&s));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_add_appends(tc: TestCase) {
+        let s = tc.draw(bytes());
+        let t = tc.draw(bytes());
+        let mut v = s.clone();
+        assert_eq!(v.add_from_strings(std::slice::from_ref(&t)).unwrap(), !t.is_empty());
+        assert_eq!(v, [s, t].concat());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_list_roundtrip(tc: TestCase) {
+        let l = tc.draw(gs::vecs(bytes()));
+        assert_eq!(roundtrip(&l), l);
+    }
+
+    // lists print their quoted elements separated by spaces, unescaped
+    #[hegel::test(test_cases = 1000)]
+    fn str_list_to_string_joins_quoted_elements(tc: TestCase) {
+        let l = tc.draw(gs::vecs(bytes()));
+        let q = tc.draw(gs::sampled_from(vec![Quoting::Raw, Quoting::Kakoune, Quoting::Shell]));
+        let quoted: Vec<Vec<u8>> = l.iter().map(|e| crate::string_utils::quoter(q)(e)).collect();
+        assert_eq!(l.to_string_q(q), crate::string_utils::join(&quoted, b' ', false));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn int_list_roundtrip(tc: TestCase) {
+        let l = tc.draw(gs::vecs(gs::integers::<i32>()));
+        assert_eq!(roundtrip(&l), l);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn list_add_appends_and_remove_removes_first_occurrences(tc: TestCase) {
+        let l = tc.draw(gs::vecs(gs::integers::<i32>().max_value(5).min_value(0)));
+        let more = tc.draw(gs::vecs(gs::integers::<i32>().max_value(5).min_value(0)));
+        let strs: Vec<Vec<u8>> = more.iter().map(|i| i.to_string().into_bytes()).collect();
+        let mut v = l.clone();
+        assert_eq!(v.add_from_strings(&strs).unwrap(), !more.is_empty());
+        assert_eq!(v, [l.clone(), more.clone()].concat());
+        let mut expected = l.clone();
+        let mut removed = false;
+        for m in &more {
+            if let Some(p) = expected.iter().position(|x| x == m) {
+                expected.remove(p);
+                removed = true;
+            }
+        }
+        let mut w = l.clone();
+        assert_eq!(w.remove_from_strings(&strs).unwrap(), removed);
+        assert_eq!(w, expected);
+    }
+
+    fn string_map(key: impl hegel::PrintableGenerator<Vec<u8>>, value: impl hegel::PrintableGenerator<Vec<u8>>)
+        -> impl hegel::PrintableGenerator<StringMap> {
+        gs::vecs(gs::tuples2(key, value)).map(|kvs| kvs.into_iter().collect::<StringMap>())
+    }
+
+    // C++ escapes only '=' in keys and values (escape(str, '=', '\\')) but
+    // unescapes both '=' and '\\' when parsing, so backslashes do not round
+    // trip (faithful C++ quirk): they are excluded here.
+    #[hegel::test(test_cases = 1000)]
+    fn str_map_roundtrip_without_backslashes(tc: TestCase) {
+        let m = tc.draw(string_map(no_backslash(), no_backslash()));
+        let back = roundtrip(&m);
+        assert_eq!(back.iter().collect::<Vec<_>>(), m.iter().collect::<Vec<_>>());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_map_last_value_wins(tc: TestCase) {
+        let k = tc.draw(no_backslash());
+        let v1 = tc.draw(no_backslash());
+        let v2 = tc.draw(no_backslash());
+        let entry = |v: &[u8]| [escape(&k, b"=", b'\\'), b"=".to_vec(), escape(v, b"=", b'\\')].concat();
+        let m = StringMap::from_strings(&[entry(&v1), entry(&v2)]).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&k), Some(&v2));
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_map_requires_key_value_pairs(tc: TestCase) {
+        let s = tc.draw(bytes());
+        // number of unescaped '=' in s
+        let mut seps = 0;
+        let mut escaped = false;
+        for &c in &s {
+            if !escaped && c == b'=' {
+                seps += 1;
+            }
+            escaped = !escaped && c == b'\\';
+        }
+        assert_eq!(StringMap::from_strings(std::slice::from_ref(&s)).is_ok(), seps == 1);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn str_map_remove(tc: TestCase) {
+        let m = tc.draw(string_map(gs::vecs(gs::sampled_from(b"ab".to_vec())).max_size(2), gs::vecs(gs::sampled_from(b"xy".to_vec())).max_size(2)));
+        let k = tc.draw(gs::vecs(gs::sampled_from(b"ab".to_vec())).max_size(2));
+        let v = tc.draw(gs::vecs(gs::sampled_from(b"xy".to_vec())).max_size(2));
+        let mut r = m.clone();
+        let changed = r.remove_from_strings(&[[&k[..], b"=", &v].concat()]).unwrap();
+        let should_remove = m.get(&k).is_some_and(|cur| v.is_empty() || *cur == v);
+        assert_eq!(changed, should_remove);
+        let mut expected = m.clone();
+        if should_remove {
+            expected.shift_remove(&k);
+        }
+        assert_eq!(r.iter().collect::<Vec<_>>(), expected.iter().collect::<Vec<_>>());
+    }
+
+    // join() drops leading empty elements (the joiner is only added once the
+    // result is non empty), so a candidate with an empty first element does
+    // not round trip (faithful C++ quirk): the first element is non empty here.
+    #[hegel::test(test_cases = 1000)]
+    fn completion_candidate_roundtrip(tc: TestCase) {
+        let c: CompletionCandidate =
+            (tc.draw(bytes().filter(|s| !s.is_empty())), tc.draw(bytes()), tc.draw(bytes()));
+        assert_eq!(CompletionCandidate::elem_from_string(&c.elem_to_string(Quoting::Raw)).unwrap(), c);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn tuple_element_count_is_checked(tc: TestCase) {
+        let elems = tc.draw(gs::vecs(bytes().filter(|s| !s.is_empty())).min_size(1).max_size(6));
+        let s = crate::string_utils::join(&elems, TUPLE_SEPARATOR, true);
+        let res = tuple_from_string(&s, 3);
+        match elems.len() {
+            3 => assert_eq!(res.unwrap(), elems),
+            n => {
+                let msg = res.unwrap_err().what().to_vec();
+                let expected: &[u8] = if n < 3 { b"not enough elements in tuple" } else { b"too many elements in tuple" };
+                assert_eq!(msg, expected);
+            }
+        }
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn completion_list_roundtrip(tc: TestCase) {
+        let prefix = tc.draw(bytes());
+        let list = tc.draw(gs::vecs(gs::tuples3(bytes().filter(|s| !s.is_empty()), bytes(), bytes())));
+        let l = CompletionList { prefix, list };
+        assert_eq!(roundtrip(&l), l);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn codepoint_roundtrip(tc: TestCase) {
+        let c = tc.draw(gs::characters());
+        let cp = CodepointOpt(c as u32);
+        assert_eq!(roundtrip(&cp), cp);
+    }
+
+    // A lone invalid lead byte is one character, decoded sign extended like
+    // C++ (char is signed), which then encodes to nothing.
+    #[hegel::test(test_cases = 1000)]
+    fn codepoint_from_invalid_byte_is_sign_extended(tc: TestCase) {
+        let b = tc.draw(gs::integers::<u8>().min_value(0xC0));
+        let cp = CodepointOpt::from_strings(&[vec![b]]).unwrap();
+        assert_eq!(cp, CodepointOpt(b as i8 as i32 as u32));
+        assert_eq!(cp.to_strings(), vec![Vec::<u8>::new()]);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn codepoint_requires_single_char(tc: TestCase) {
+        let s = tc.draw(gs::text().filter(|s| s.chars().count() != 1));
+        assert!(CodepointOpt::from_strings(&[s.into_bytes()]).is_err());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn coord_roundtrip(tc: TestCase) {
+        let c = DisplayCoord::new(tc.draw(gs::integers::<i32>()), tc.draw(gs::integers::<i32>()));
+        assert_eq!(roundtrip(&c), c);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn coord_requires_two_ints(tc: TestCase) {
+        let parts = tc.draw(gs::vecs(gs::integers::<i32>()).filter(|v| v.len() != 2).map(|v| v.into_iter().take(4).collect::<Vec<_>>()));
+        let s = parts.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        assert!(DisplayCoord::from_strings(&[s.into_bytes()]).is_err());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn enum_roundtrip(tc: TestCase) {
+        let q = tc.draw(gs::sampled_from(vec![Quoting::Raw, Quoting::Kakoune, Quoting::Shell]));
+        assert_eq!(roundtrip(&q), q);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn enum_rejects_unknown_names(tc: TestCase) {
+        let s = tc.draw(bytes().filter(|s| !matches!(&s[..], b"raw" | b"kakoune" | b"shell")));
+        assert!(Quoting::from_strings(&[s]).is_err());
+    }
+
+    crate::kak_flags! {
+        struct TestFlags: u32 {
+            const None = 0;
+            const A = 1 << 0;
+            const B = 1 << 1;
+            const C = 1 << 2;
+        }
+    }
+    impl EnumDesc for TestFlags {
+        fn desc() -> &'static [(Self, &'static str)] {
+            &[(TestFlags::A, "a"), (TestFlags::B, "bee"), (TestFlags::C, "c")]
+        }
+    }
+    crate::flags_option!(TestFlags);
+
+    fn test_flags() -> impl hegel::PrintableGenerator<TestFlags> {
+        gs::integers::<u32>().max_value(7).map(TestFlags)
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn flags_roundtrip(tc: TestCase) {
+        let f = tc.draw(test_flags());
+        assert_eq!(roundtrip(&f), f);
+    }
+
+    #[test]
+    fn flags_type_name() {
+        assert_eq!(TestFlags::type_name(), b"flags(a|bee|c)");
+        assert_eq!(Quoting::type_name(), b"enum(raw|kakoune|shell)");
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn flags_add_and_remove(tc: TestCase) {
+        let f = tc.draw(test_flags());
+        let g = tc.draw(test_flags());
+        let gs_ = g.to_strings();
+        let mut v = f;
+        assert_eq!(v.add_from_strings(&gs_).unwrap(), (f | g) != f);
+        assert_eq!(v, f | g);
+        let mut w = f;
+        assert_eq!(w.remove_from_strings(&gs_).unwrap(), (f & !g) != f);
+        assert_eq!(w, f & !g);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn flags_reject_unknown_names(tc: TestCase) {
+        let names = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "bee", "c", "b", "x", ""])).min_size(1));
+        // an empty string is no flags (splitting it yields no element)
+        let valid = names == [""] || names.iter().all(|n| matches!(*n, "a" | "bee" | "c"));
+        assert_eq!(TestFlags::from_strings(&[names.join("|").into_bytes()]).is_ok(), valid);
+    }
 }
