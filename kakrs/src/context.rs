@@ -646,6 +646,10 @@ impl Context {
         self.edition_level.set(level - 1);
     }
 
+    pub fn begin_selection_edition(&self) {
+        self.selection_history.borrow_mut().begin_edition();
+    }
+
     fn selection_history_begin_edition(&self) {
         self.selection_history.borrow_mut().begin_edition();
     }

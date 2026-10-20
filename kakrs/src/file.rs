@@ -307,11 +307,14 @@ pub fn write_fd(fd: i32, data: &[u8], atomic: bool) -> Result<()> {
         } else {
             let err = errno();
             if err == libc::EAGAIN && !atomic && has_event_manager {
-                crate::event_manager::EventManager::instance().handle_next_events(
+                if let Err(e) = crate::event_manager::EventManager::instance().try_handle_next_events(
                     crate::event_manager::EventMode::Urgent,
                     None,
                     Some(std::time::Duration::ZERO),
-                );
+                ) {
+                    result = Err(e);
+                    break;
+                }
             } else {
                 result = Err(fd_access_error(fd, &strerror(err)));
                 break;

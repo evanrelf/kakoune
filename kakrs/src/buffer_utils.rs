@@ -524,10 +524,9 @@ pub fn create_fifo_buffer(name: Vec<u8>, fd: i32, flags: BufferFlags, scroll: Au
     let state = Rc::new(FifoState { buffer: buffer.weak(), scroll, had_trailing_newline: Cell::new(false) });
     let watcher = FDWatcher::new(fd, FdEvents::Read, EventMode::Normal, move |w, _, mode| {
         if mode == EventMode::Normal {
-            if let Err(err) = state.read_fifo(w.fd()) {
-                crate::debug::write_to_debug_buffer(&kformat!("error reading fifo: {}", err.what()));
-            }
+            state.read_fifo(w.fd())?;
         }
+        Ok(())
     });
     buffer.values().insert(fifo_watcher_id(), Rc::new(FifoWatcher { watcher, buffer: buffer.weak() }));
     buffer.set_flags(flags | BufferFlags::Fifo | BufferFlags::NoUndo);

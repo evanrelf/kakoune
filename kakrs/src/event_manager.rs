@@ -6,6 +6,7 @@
 //! be called re-entrantly and survive the destruction of their handle while
 //! running.
 
+use crate::exception::Result;
 use slotmap::{new_key_type, SlotMap};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,8 +36,8 @@ new_key_type! {
     pub struct TimerKey;
 }
 
-pub type FdCallback = Rc<dyn Fn(&WatcherRef, FdEvents, EventMode)>;
-pub type TimerCallback = Rc<dyn Fn(&TimerRef)>;
+pub type FdCallback = Rc<dyn Fn(&WatcherRef, FdEvents, EventMode) -> Result<()>>;
+pub type TimerCallback = Rc<dyn Fn(&TimerRef) -> Result<()>>;
 
 struct WatcherData {
     fd: i32,
@@ -98,8 +99,19 @@ impl EventManager {
         EVENT_MANAGER.with(|e| e.get().is_some())
     }
 
-    /// blocks until next event if no timeout given
-    pub fn handle_next_events(&self, mode: EventMode, sigmask: Option<&libc::sigset_t>, mut timeout: Option<Duration>) -> bool {
+    /// blocks until next event if no timeout given, errors from callbacks are ignored
+    pub fn handle_next_events(&self, mode: EventMode, sigmask: Option<&libc::sigset_t>, timeout: Option<Duration>) -> bool {
+        self.try_handle_next_events(mode, sigmask, timeout).unwrap_or(true)
+    }
+
+    /// blocks until next event if no timeout given, errors from callbacks
+    /// abort processing and are returned
+    pub fn try_handle_next_events(
+        &self,
+        mode: EventMode,
+        sigmask: Option<&libc::sigset_t>,
+        mut timeout: Option<Duration>,
+    ) -> Result<bool> {
         let mut max_fd = 0;
         let mut rfds: libc::fd_set = unsafe { std::mem::zeroed() };
         let mut wfds: libc::fd_set = unsafe { std::mem::zeroed() };
@@ -184,7 +196,7 @@ impl EventManager {
                     .find(|(_, w)| w.fd == fd)
                     .map(|(k, w)| (k, w.callback.clone()));
                 if let Some((key, callback)) = found {
-                    callback(&WatcherRef { key }, events, mode);
+                    callback(&WatcherRef { key }, events, mode)?;
                 }
             }
         }
@@ -195,17 +207,17 @@ impl EventManager {
         for key in timers {
             let due = self.timers.borrow().get(key).and_then(|t| t.date).is_some_and(|d| d <= now);
             if due {
-                self.run_timer(key, mode);
+                self.run_timer(key, mode)?;
             }
         }
 
-        res > 0
+        Ok(res > 0)
     }
 
-    fn run_timer(&self, key: TimerKey, mode: EventMode) {
+    fn run_timer(&self, key: TimerKey, mode: EventMode) -> Result<()> {
         let callback = {
             let mut timers = self.timers.borrow_mut();
-            let Some(timer) = timers.get_mut(key) else { return };
+            let Some(timer) = timers.get_mut(key) else { return Ok(()) };
             if mode == timer.mode {
                 timer.date = None;
                 Some(timer.callback.clone())
@@ -216,8 +228,9 @@ impl EventManager {
             }
         };
         if let Some(callback) = callback {
-            callback(&TimerRef { key });
+            callback(&TimerRef { key })?;
         }
+        Ok(())
     }
 
     /// force the watchers associated with fd to be executed
@@ -231,10 +244,11 @@ impl EventManager {
         HAS_FORCED_FD.store(true, Ordering::SeqCst);
     }
 
-    pub fn handle_urgent_events() {
+    pub fn handle_urgent_events() -> Result<()> {
         if Self::has_instance() {
-            Self::instance().handle_next_events(EventMode::Urgent, None, Some(Duration::ZERO));
+            Self::instance().try_handle_next_events(EventMode::Urgent, None, Some(Duration::ZERO))?;
         }
+        Ok(())
     }
 }
 
@@ -265,6 +279,10 @@ fn watcher_fd(key: WatcherKey) -> i32 {
     EventManager::instance().watchers.borrow().get(key).map_or(-1, |w| w.fd)
 }
 
+pub fn watcher_reset_fd(key: WatcherKey, fd: i32) {
+    watcher_set_fd(key, fd)
+}
+
 fn watcher_set_fd(key: WatcherKey, fd: i32) {
     if let Some(w) = EventManager::instance().watchers.borrow_mut().get_mut(key) {
         w.fd = fd;
@@ -291,7 +309,12 @@ pub struct FDWatcher {
 }
 
 impl FDWatcher {
-    pub fn new(fd: i32, events: FdEvents, mode: EventMode, callback: impl Fn(&WatcherRef, FdEvents, EventMode) + 'static) -> Self {
+    pub fn new(
+        fd: i32,
+        events: FdEvents,
+        mode: EventMode,
+        callback: impl Fn(&WatcherRef, FdEvents, EventMode) -> Result<()> + 'static,
+    ) -> Self {
         let key = EventManager::instance().watchers.borrow_mut().insert(WatcherData {
             fd,
             events,
@@ -325,11 +348,12 @@ impl FDWatcher {
         watcher_set_fd(self.key, -1)
     }
     /// Run the callback directly
-    pub fn run(&self, events: FdEvents, mode: EventMode) {
+    pub fn run(&self, events: FdEvents, mode: EventMode) -> Result<()> {
         let callback = EventManager::instance().watchers.borrow().get(self.key).map(|w| w.callback.clone());
         if let Some(callback) = callback {
-            callback(&WatcherRef { key: self.key }, events, mode);
+            callback(&WatcherRef { key: self.key }, events, mode)?;
         }
+        Ok(())
     }
 }
 
@@ -376,7 +400,7 @@ pub struct Timer {
 }
 
 impl Timer {
-    pub fn new(date: TimePoint, callback: impl Fn(&TimerRef) + 'static, mode: EventMode) -> Self {
+    pub fn new(date: TimePoint, callback: impl Fn(&TimerRef) -> Result<()> + 'static, mode: EventMode) -> Self {
         let key = if EventManager::has_instance() {
             Some(EventManager::instance().timers.borrow_mut().insert(TimerData {
                 date,
@@ -410,10 +434,11 @@ impl Timer {
         self.set_next_date(None);
     }
     /// Run the callback directly
-    pub fn run(&self, mode: EventMode) {
+    pub fn run(&self, mode: EventMode) -> Result<()> {
         if let Some(key) = self.key {
-            EventManager::instance().run_timer(key, mode);
+            EventManager::instance().run_timer(key, mode)?;
         }
+        Ok(())
     }
 }
 

@@ -200,6 +200,10 @@ impl<'a> ParametersParser<'a> {
         self.switches.get(name.as_bytes()).map(|v| v.as_slice())
     }
 
+    pub fn switches_contains(&self, name: &[u8]) -> bool {
+        self.switches.contains_key(name)
+    }
+
     pub fn has_switch(&self, name: &str) -> bool {
         self.switches.contains_key(name.as_bytes())
     }

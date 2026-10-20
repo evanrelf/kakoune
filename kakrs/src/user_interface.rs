@@ -32,8 +32,10 @@ pub enum StatusStyle {
     Prompt,
 }
 
-pub type OnKeyCallback = Box<dyn Fn(Key)>;
-pub type OnPasteCallback = Box<dyn Fn(&[u8])>;
+/// Key callbacks may fail, for example with a cancel error, which then
+/// propagates out of the event loop
+pub type OnKeyCallback = Box<dyn Fn(Key) -> crate::exception::Result<()>>;
+pub type OnPasteCallback = Box<dyn Fn(&[u8]) -> crate::exception::Result<()>>;
 pub type UiOptions = IndexMap<Vec<u8>, Vec<u8>>;
 
 pub trait UserInterface {
