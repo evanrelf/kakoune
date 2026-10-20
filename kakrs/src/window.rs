@@ -170,12 +170,14 @@ impl Window {
     }
 
     fn build_setup(&self, context: &Context) -> Setup {
+        let timestamp = context.buffer().timestamp();
+        let faces_hash = compute_faces_hash(&context.faces_allow_local(false));
         let sels = context.selections();
         Setup {
             position: self.position.get(),
             dimensions: self.dimensions.get(),
-            timestamp: context.buffer().timestamp(),
-            faces_hash: compute_faces_hash(&context.faces_allow_local(false)),
+            timestamp,
+            faces_hash,
             main_selection: sels.main_index(),
             selections: sels.iter().map(|s| s.basic()).collect(),
         }
@@ -184,10 +186,11 @@ impl Window {
     pub fn needs_redraw(&self, context: &Context) -> bool {
         let last = self.last_setup.borrow();
         let faces_hash = compute_faces_hash(&context.faces_allow_local(false));
+        let timestamp = context.buffer().timestamp();
         let selections = context.selections();
         self.position.get() != last.position
             || self.dimensions.get() != last.dimensions
-            || context.buffer().timestamp() != last.timestamp
+            || timestamp != last.timestamp
             || selections.main_index() != last.main_selection
             || selections.size() != last.selections.len()
             || faces_hash != last.faces_hash

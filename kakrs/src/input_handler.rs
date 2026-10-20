@@ -1845,7 +1845,7 @@ impl Insert {
                 self.idle_timer.set_next_date(now_plus(get_idle_timeout(context)));
             }
         } else if key == Key::new(named::ESCAPE) || key == ctrl(crate::keys::key('c')) {
-            self.completer.reset();
+            self.completer.try_reset()?;
             ih.pop_mode(self)?;
         } else if key == Key::new(named::BACKSPACE) || key == shift(Key::new(named::BACKSPACE)) {
             let (sels, main_cursor) = {
@@ -1960,7 +1960,7 @@ impl Insert {
             update_completions = false;
         } else if key == ctrl(crate::keys::key('o')) {
             self.auto_complete.set(!self.auto_complete.get());
-            self.completer.reset();
+            self.completer.try_reset()?;
         } else if key == ctrl(crate::keys::key('u')) {
             buffer.commit_undo_group();
             context.print_status(DisplayLine::from_str_face(

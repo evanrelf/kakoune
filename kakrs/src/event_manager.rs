@@ -143,8 +143,11 @@ impl EventManager {
             }
         }
 
+        // Deviation: the C++ resets the timeout here (blocking), a regression from
+        // the commit that introduced the timeout parameter, where a forced fd used
+        // to mean "do not block". See PORTING.md.
         if HAS_FORCED_FD.load(Ordering::SeqCst) {
-            timeout = None;
+            timeout = Some(Duration::ZERO);
         }
 
         let next_date = self.timers.borrow().iter().filter_map(|(_, t)| t.date).min();

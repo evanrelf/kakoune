@@ -18,6 +18,7 @@ pub mod changes;
 pub mod client;
 pub mod client_manager;
 pub mod command_manager;
+pub mod commands;
 pub mod completion;
 pub mod context;
 pub mod debug;
@@ -34,6 +35,7 @@ pub mod input_handler;
 pub mod insert_completer;
 pub mod json;
 pub mod json_ui;
+pub mod kak_main;
 pub mod keymap_manager;
 pub mod keys;
 pub mod line_modification;
@@ -44,10 +46,12 @@ pub mod ranked_match;
 pub mod regex;
 pub mod regex_vm;
 pub mod register_manager;
+pub mod remote;
 pub mod scope;
 pub mod selection;
 pub mod shell_manager;
 pub mod string_utils;
+pub mod terminal_ui;
 pub mod unicode;
 pub mod units;
 pub mod user_interface;
@@ -58,5 +62,5 @@ pub mod window;
 pub mod word_db;
 
 fn main() {
-    println!("Hello, world!");
+    std::process::exit(kak_main::main());
 }
