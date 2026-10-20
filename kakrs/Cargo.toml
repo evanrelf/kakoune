@@ -3,4 +3,14 @@ name = "kakrs"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "kak"
+path = "src/main.rs"
+
 [dependencies]
+bstr = { version = "1.13.1", default-features = false, features = ["std"] }
+indexmap = "2.14.2"
+libc = "0.2.191"
+
+[profile.release]
+debug = 1
