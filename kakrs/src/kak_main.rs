@@ -1192,6 +1192,9 @@ fn param_desc() -> ParameterDesc {
 /// and backup modified buffers before exiting.
 pub fn main() -> i32 {
     std::panic::set_hook(Box::new(|info| {
+        if info.payload().is::<crate::string_utils::BadAlloc>() {
+            return; // handled below, like the C++ main catching std::bad_alloc
+        }
         TerminalUI::restore_terminal();
         let msg = kformat!(
             "Kakoune panicked, exiting.\nPid: {}\n{}\nCallstack:\n{}\n",
@@ -1204,6 +1207,19 @@ pub fn main() -> i32 {
 
     match std::panic::catch_unwind(main_impl) {
         Ok(status) => status,
+        Err(payload) if payload.is::<crate::string_utils::BadAlloc>() => {
+            // [FAITHFUL] the C++ unwinds to main: destructors restore the
+            // terminal and remove the session socket, modified buffers are
+            // not backed up
+            if TerminalUI::is_alive() {
+                TerminalUI::restore_terminal();
+            }
+            if Server::has_instance() {
+                Server::instance().close_session(true);
+            }
+            write_stderr(b"uncaught exception (St9bad_alloc):\nstd::bad_alloc\n");
+            -1
+        }
         Err(_) => {
             if Server::has_instance() {
                 Server::instance().close_session(true);

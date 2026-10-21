@@ -2,13 +2,24 @@
 
 use crate::exception::{Error, Result};
 use crate::unicode::{codepoint_width, is_blank, is_eol, is_horizontal_blank};
-use crate::units::{Codepoint, ColumnCount};
+use crate::units::{Codepoint, ColumnCount, div_or_zero};
 use crate::utf8;
 
 pub type KString = Vec<u8>;
 
 /// String(cp, count)
+/// Panic payload standing for the C++ `std::bad_alloc`, which nothing
+/// catches before `main`; `kak_main::main` handles it like the C++ main
+pub struct BadAlloc;
+
 pub fn string_of_cp(cp: Codepoint, count: i32) -> Vec<u8> {
+    // [FAITHFUL] String(cp, count) reserves codepoint_size(cp) * count bytes,
+    // allocating (size_t)bytes + 1: -1 wraps to an empty allocation (the
+    // string stays empty), less than that throws std::bad_alloc and kak exits
+    // (reachable with tabstop 0, see UPSTREAM-QUIRKS.md)
+    if utf8::codepoint_size(cp) as i64 * count as i64 <= -2 {
+        std::panic::panic_any(BadAlloc);
+    }
     let mut res = Vec::new();
     for _ in 0..count.max(0) {
         utf8::dump(&mut res, cp);
@@ -264,7 +275,7 @@ pub fn expand_tabs(line: &[u8], tabstop: ColumnCount, mut col: ColumnCount) -> V
     while it < line.len() {
         if line[it] == b'\t' {
             // [DEVIATION] a zero tabstop divides by zero: UB in C++, a panic here
-            let end_col = (col / tabstop + 1) * tabstop;
+            let end_col = (div_or_zero(col, tabstop) + 1) * tabstop;
             res.extend(std::iter::repeat_n(b' ', (end_col - col) as usize));
             col = end_col;
             it += 1;
@@ -945,16 +956,29 @@ mod tests {
     fn string_of_cp_repeats_encoding(tc: TestCase) {
         init_test_locale();
         let cp = tc.draw(gs::characters()) as u32;
-        let count = tc.draw(gs::integers::<i32>().min_value(-3).max_value(10));
-        assert_eq!(string_of_cp(cp, count), utf8::encode(cp).repeat(count.max(0) as usize));
+        let count = tc.draw(gs::integers::<i32>().min_value(0).max_value(10));
+        assert_eq!(string_of_cp(cp, count), utf8::encode(cp).repeat(count as usize));
+    }
+
+    // [FAITHFUL] negative counts are the C++ std::bad_alloc
+    #[hegel::test(test_cases = 100)]
+    fn string_of_cp_negative_count_is_bad_alloc(tc: TestCase) {
+        let cp = tc.draw(gs::characters()) as u32;
+        let count = tc.draw(gs::integers::<i32>().min_value(-100).max_value(-1));
+        let res = std::panic::catch_unwind(|| string_of_cp(cp, count));
+        if utf8::codepoint_size(cp) as i32 * count == -1 {
+            assert_eq!(res.ok(), Some(Vec::new()));
+        } else {
+            assert!(res.is_err_and(|p| p.is::<BadAlloc>()));
+        }
     }
 
     #[hegel::test(test_cases = 1000)]
     fn string_of_cp_cols_repeats_to_fill_columns(tc: TestCase) {
         init_test_locale();
         let cp = tc.draw(gs::characters()) as u32;
-        let cols = tc.draw(gs::integers::<i32>().min_value(-3).max_value(10));
+        let cols = tc.draw(gs::integers::<i32>().min_value(0).max_value(10));
         let width = codepoint_width(cp).max(1);
-        assert_eq!(string_of_cp_cols(cp, cols), utf8::encode(cp).repeat((cols / width).max(0) as usize));
+        assert_eq!(string_of_cp_cols(cp, cols), utf8::encode(cp).repeat((cols / width) as usize));
     }
 }

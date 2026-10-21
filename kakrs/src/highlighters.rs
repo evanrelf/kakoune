@@ -29,7 +29,7 @@ use crate::regex_vm::{ForwardSearch, RegexCompileFlags, RegexExecFlags, Threaded
 use crate::scope::GlobalScope;
 use crate::string_utils::{char_length, column_length, str_to_int, str_to_int_ifp, string_of_cp, Quoting};
 use crate::unicode::{codepoint_width, is_blank, is_horizontal_blank, is_word};
-use crate::units::{BufferCoord, BufferRange, ByteCount, Codepoint, ColumnCount, LineCount};
+use crate::units::{BufferCoord, BufferRange, ByteCount, Codepoint, ColumnCount, LineCount, rem_or_self};
 use crate::utf8::{self, SliceIt, Utf8Iter};
 use crate::value::{get_free_value_id, ValueId};
 use indexmap::IndexMap;
@@ -1091,7 +1091,7 @@ impl Highlighter for TabulationHighlighter {
                     while pos < next_tab {
                         column += codepoint_width(utf8::read_codepoint(&data[..next_tab], &mut pos));
                     }
-                    let tabwidth = tabstop - (column % tabstop);
+                    let tabwidth = tabstop - rem_or_self(column, tabstop);
                     column += tabwidth;
 
                     if atom_it < line.len() && pos >= line.atoms()[atom_it].begin().column as usize {
@@ -1129,7 +1129,7 @@ impl Highlighter for TabulationHighlighter {
 
         let tabstop: ColumnCount = context.context.options().val::<i32>("tabstop");
         let column = get_column(&buffer, tabstop, cursor);
-        let width = tabstop - (column % tabstop);
+        let width = tabstop - rem_or_self(column, tabstop);
         let win_end =
             setup.first_column + context.context.try_window()?.dimensions().column - setup.widget_columns;
         let offset = (column + width - win_end).max(0);
@@ -1265,7 +1265,7 @@ impl Highlighter for ShowWhitespacesHighlighter {
                         let atom = &mut line.atoms_mut()[atom_it];
                         if cp == '\t' as Codepoint && !self.tab.is_empty() && !self.tabpad.is_empty() {
                             let column = get_column(&buffer, tabstop, coord);
-                            let count = tabstop - (column % tabstop);
+                            let count = tabstop - rem_or_self(column, tabstop);
                             let mut text = self.tab.clone();
                             text.extend(string_of_cp(utf8::codepoint(&self.tabpad), count - column_length(&self.tab)));
                             atom.replace_text(text);

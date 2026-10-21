@@ -18,3 +18,5 @@ GPATH
 GRTAGS
 GTAGS
 /result
+/kakrs/tools/kakfuzz/__pycache__
+/kakfuzz-out

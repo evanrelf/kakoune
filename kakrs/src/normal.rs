@@ -36,7 +36,7 @@ use crate::string_utils::{column_length, escape, join, split_after, split_escape
 use crate::unicode::{
     is_basic_alpha, is_blank, is_horizontal_blank, is_punctuation, is_word_default, to_lower, to_upper, WordType,
 };
-use crate::units::{BufferCoord, BufferCoordAndTarget, BufferRange, ByteCount, CharCount, ColumnCount, Codepoint, DisplayCoord, LineCount};
+use crate::units::{BufferCoord, BufferCoordAndTarget, BufferRange, ByteCount, CharCount, Codepoint, ColumnCount, DisplayCoord, LineCount, div_or_zero, rem_or_self};
 use crate::user_interface::InfoStyle;
 use crate::utf8;
 use crate::utils::ScopedSetBool;
@@ -1571,7 +1571,7 @@ fn deindent(context: &Context, params: NormalParams, deindent_incomplete: bool) 
             for column in 0..content.len() {
                 let c = content[column];
                 if c == b'\t' {
-                    width = (width / tabstop + 1) * tabstop;
+                    width = (div_or_zero(width, tabstop) + 1) * tabstop;
                 } else if c == b' ' {
                     width += 1;
                 } else {
@@ -2066,8 +2066,8 @@ fn align(context: &Context, _: NormalParams) -> Result<()> {
             } else {
                 let inscol = get_column(&buffer, tabstop, insert_coord);
                 let targetcol = inscol + inscount;
-                let tabcol = inscol - (inscol % tabstop);
-                let tabs = (targetcol - tabcol) / tabstop;
+                let tabcol = inscol - rem_or_self(inscol, tabstop);
+                let tabs = div_or_zero(targetcol - tabcol, tabstop);
                 let spaces = targetcol - if tabs != 0 { tabcol + tabs * tabstop } else { inscol };
                 let mut s = string_of_cp('\t' as u32, tabs);
                 s.extend(string_of_cp(' ' as u32, spaces));
@@ -2144,7 +2144,7 @@ fn tabs_to_spaces(context: &Context, params: NormalParams) -> Result<()> {
             while it != end {
                 if crate::utf8::ByteIt::get(&it) == b'\t' {
                     let col = get_column(&buffer, opt_tabstop, it.coord());
-                    let end_col = (col / tabstop + 1) * tabstop;
+                    let end_col = (div_or_zero(col, tabstop) + 1) * tabstop;
                     tabs.push(Selection::new(it.coord()));
                     spaces.push(string_of_cp(' ' as u32, end_col - col));
                 }
@@ -2177,11 +2177,11 @@ fn spaces_to_tabs(context: &Context, params: NormalParams) -> Result<()> {
                     let spaces_beg = it;
                     let mut spaces_end = spaces_beg.next_byte();
                     let mut col = get_column(&buffer, opt_tabstop, spaces_end.coord());
-                    while spaces_end != end && get(&spaces_end) == b' ' && (col % tabstop) != 0 {
+                    while spaces_end != end && get(&spaces_end) == b' ' && rem_or_self(col, tabstop) != 0 {
                         crate::utf8::ByteIt::inc(&mut spaces_end);
                         col += 1;
                     }
-                    if (col % tabstop) == 0 {
+                    if rem_or_self(col, tabstop) == 0 {
                         spaces.push(Selection::from_range(spaces_beg.coord(), spaces_end.prev_byte().coord()));
                     } else if spaces_end != end && get(&spaces_end) == b'\t' {
                         spaces.push(Selection::from_range(spaces_beg.coord(), spaces_end.coord()));

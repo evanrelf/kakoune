@@ -16,7 +16,7 @@ use crate::hook_manager::Hook;
 use crate::option_types::EnumDesc;
 use crate::selection::{selection_to_string, ColumnType, Selection};
 use crate::unicode::{codepoint_width, is_word_default};
-use crate::units::{BufferCoord, BufferRange, ByteCount, CharCount, ColumnCount, DisplayCoord, LineCount};
+use crate::units::{BufferCoord, BufferRange, ByteCount, CharCount, ColumnCount, DisplayCoord, LineCount, div_or_zero};
 use crate::utf8;
 use crate::value::{get_free_value_id, ValueId};
 use std::cell::Cell;
@@ -100,7 +100,7 @@ pub fn get_column(buffer: &Buffer, tabstop: ColumnCount, coord: BufferCoord) -> 
     let mut it = 0usize;
     while it != line.len() && coord.column > it as ByteCount {
         if line[it] == b'\t' {
-            col = (col / tabstop + 1) * tabstop;
+            col = (div_or_zero(col, tabstop) + 1) * tabstop;
             it += 1;
         } else {
             col += codepoint_width(utf8::read_codepoint(&line, &mut it));
@@ -120,7 +120,7 @@ pub fn get_byte_to_column(buffer: &Buffer, tabstop: ColumnCount, coord: DisplayC
     let mut it = 0usize;
     while it != line.len() && coord.column > col {
         if line[it] == b'\t' {
-            col = (col / tabstop + 1) * tabstop;
+            col = (div_or_zero(col, tabstop) + 1) * tabstop;
             if col > coord.column {
                 // the target column was in the tab
                 break;

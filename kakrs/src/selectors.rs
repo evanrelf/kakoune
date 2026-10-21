@@ -10,7 +10,7 @@ use crate::regex::{MatchResults, Regex, RegexIterator, backward_regex_search, ma
 use crate::regex_vm::{BackwardSearch, ForwardSearch, RegexExecFlags, RegexMode, ThreadedRegexVM, is_direction};
 use crate::selection::{CaptureList, MAX_COLUMN, MAX_NON_EOL_COLUMN, Selection, compare_selections};
 use crate::unicode::{WordType, categorize, is_blank, is_eol, is_horizontal_blank, is_punctuation, is_word_type};
-use crate::units::{BufferCoord, BufferCoordAndTarget, CharCount, Codepoint, LineCount};
+use crate::units::{BufferCoord, BufferCoordAndTarget, CharCount, Codepoint, LineCount, div_or_zero};
 use crate::utf8::{ByteIt, Utf8Iter, it_next, it_previous};
 
 type Utf8Iterator<'a> = Utf8Iter<BufferIterator<'a>>;
@@ -866,7 +866,7 @@ pub fn select_indent(context: &Context, selection: &Selection, _count: i32, flag
             if c == b' ' {
                 indent += 1;
             } else if c == b'\t' {
-                indent = (indent / tabstop + 1) * tabstop;
+                indent = (div_or_zero(indent, tabstop) + 1) * tabstop;
             } else {
                 break;
             }

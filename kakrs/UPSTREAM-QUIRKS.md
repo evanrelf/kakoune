@@ -39,6 +39,17 @@ handler that backs up modified buffers never runs.
   the port panics (both back up modified buffers and exit). Found by the
   differential fuzzer, e.g. `,o)<esc>3%.<a-I>pc` on a two line buffer.
 
+- **`tabstop` 0** (`set-option -remove global tabstop 8`): only `set`
+  validates options, so `-add`/`-remove` can reach values the checker
+  forbids. With `tabstop` 0, the C++ divides by zero (undefined behaviour:
+  quotient 0 and remainder the dividend on aarch64, SIGFPE on x86; the port
+  uses the aarch64 results, see `units::div_or_zero`). Column computations
+  then go negative, and `String(cp, count)` with `codepoint_size * count <=
+  -2` throws `std::bad_alloc`, which only `main` catches: kak prints
+  `uncaught exception (St9bad_alloc)` and exits without backing up modified
+  buffers (e.g. `@` on `abc<tab>`). The port reproduces this with a
+  `BadAlloc` panic payload handled in `kak_main::main`.
+
 ## Event loop
 
 - **Forced fds block** (`EventManager::handle_next_events`): when a fd is

@@ -524,6 +524,8 @@ fn sq<T: std::ops::Mul<Output = T> + Copy>(x: T) -> T {
 
 static RESIZE_PENDING: AtomicBool = AtomicBool::new(false);
 static TERMINAL_HUNGUP: AtomicBool = AtomicBool::new(false);
+/// Whether a TerminalUI exists (its destructor restores the terminal)
+static TERMINAL_UI_ALIVE: AtomicBool = AtomicBool::new(false);
 static SUSPEND_PENDING: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn resize_signal_handler(_: libc::c_int) {
@@ -1921,6 +1923,7 @@ impl TerminalUI {
             state.redraw(false);
         }
 
+        TERMINAL_UI_ALIVE.store(true, Ordering::SeqCst);
         Ok(TerminalUI { inner })
     }
 
@@ -1945,6 +1948,11 @@ impl TerminalUI {
     }
 
     /// async-signal-safe
+    /// Whether a TerminalUI currently exists
+    pub fn is_alive() -> bool {
+        TERMINAL_UI_ALIVE.load(Ordering::SeqCst)
+    }
+
     pub fn restore_terminal() {
         write_stdout(concat!(
             "\x1b>",
@@ -1962,6 +1970,7 @@ impl TerminalUI {
 
 impl Drop for TerminalUI {
     fn drop(&mut self) {
+        TERMINAL_UI_ALIVE.store(false, Ordering::SeqCst);
         // Make a running stdin watcher callback stop dispatching keys
         *self.inner.on_key.borrow_mut() = None;
         *self.inner.on_paste.borrow_mut() = None;

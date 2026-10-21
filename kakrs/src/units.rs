@@ -6,6 +6,24 @@ pub type CharCount = i32;
 pub type ColumnCount = i32;
 pub type Codepoint = u32;
 
+// [DEVIATION] tabstop can reach 0 through `set-option -add/-remove` (only
+// `set` is validated), and the C++ then divides by zero: undefined
+// behaviour, which on aarch64 gives a quotient of 0 and a remainder equal to
+// the dividend (x86 raises SIGFPE). These reproduce the aarch64 results
+// instead of panicking; see UPSTREAM-QUIRKS.md.
+
+/// `a / b`, 0 when b is 0
+#[inline]
+pub fn div_or_zero(a: i32, b: i32) -> i32 {
+    if b == 0 { 0 } else { a / b }
+}
+
+/// `a % b`, a when b is 0
+#[inline]
+pub fn rem_or_self(a: i32, b: i32) -> i32 {
+    if b == 0 { a } else { a % b }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BufferCoord {
     pub line: LineCount,
