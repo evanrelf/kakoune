@@ -61,8 +61,14 @@ listed in `UPSTREAM-QUIRKS.md`. The port only deviates where it has to:
 
 ## Building with Nix
 
-`nix build` (from the repository root) builds the Rust `kak` with the
+`nix build` (from the repository root) builds the Rust kak with the
 runtime files (kakrc, rc, colors, doc) installed in `share/kak`, the layout
-of the C++ `make install`, so it runs without `KAKOUNE_RUNTIME`. `nix develop`
+of the C++ `make install`, so it runs without `KAKOUNE_RUNTIME`. The binary
+is installed as `kakrs` so it can sit next to the C++ `kak`;
+`libexec/kak/kak` links to it, so scripts calling `kak -p`/`kak -c` from a
+kakrs session reach kakrs (kak prepends `<bin>/../libexec/kak` to the shell
+PATH). Both implementations share the session socket directory and protocol:
+`kak -l` lists both kinds of sessions, and either client can attach to or
+pipe into either server. `nix develop`
 gives a shell with the Rust toolchain. A bare `cargo build` binary still
 needs `KAKOUNE_RUNTIME=<repo>/share/kak`.

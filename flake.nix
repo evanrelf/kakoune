@@ -64,13 +64,25 @@
               cp -r rc colors $share/
               cp doc/pages/*.asciidoc $share/doc/
               ln -s rc $share/autoload
+
+              # Rename the binary so it can be installed next to the C++ kak.
+              # Drop this (and point the libexec link and mainProgram back at
+              # kak) to undo the rename.
+              mv $out/bin/kak $out/bin/kakrs
+
+              # Shell scripts run by kak (%sh{}, rc/tools, windowing) call
+              # `kak -p`/`kak -c` by name: kak prepends <bin>/../libexec/kak to
+              # their PATH, so this link makes them reach this binary rather
+              # than another kak on the PATH (same as the C++ make install).
+              mkdir -p $out/libexec/kak
+              ln -s ../../bin/kakrs $out/libexec/kak/kak
             '';
 
             meta = {
               description = "Kakoune, the modal code editor, ported to Rust";
               homepage = "https://kakoune.org";
               license = lib.licenses.unlicense;
-              mainProgram = "kak";
+              mainProgram = "kakrs";
             };
           };
         });
