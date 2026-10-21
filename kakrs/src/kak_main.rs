@@ -1313,6 +1313,8 @@ fn main_impl() -> i32 {
         for name in parser.iter() {
             if name.first() == Some(&b'+') {
                 if name == b"+" || name == b"+:" {
+                    // [DEVIATION] the C++ assigns this concatenation to a StringView,
+                    // leaving it dangling (garbage commands run); see UPSTREAM-QUIRKS.md
                     client_init.extend_from_slice(b"; exec gj");
                     continue;
                 }

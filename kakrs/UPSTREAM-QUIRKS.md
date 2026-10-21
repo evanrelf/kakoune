@@ -114,6 +114,12 @@ handler that backs up modified buffers never runs.
   `std::sort` with such a comparator is undefined behaviour; Rust's `sort_by`
   may panic ("user-provided comparison function does not correctly implement
   a total order") on candidates containing NUL or invalid UTF-8.
+- **`+` / `+:` command line argument** (open at the end of the file):
+  `main.cc` deduces `client_init` as a `StringView`, so
+  `client_init = client_init + "; exec gj"` leaves it pointing to a freed
+  temporary, and the client runs whatever is in that memory. In practice
+  neither `-e` commands nor `gj` run, and `kak -e quit +: file` never exits.
+  The port appends `; exec gj` as intended.
 - **Mouse button out of range** (`Key::mouse_button`): mask value 3 is
   printed as `right`; the C++ asserts and throws `logic_error`. Only
   reachable with malformed modifiers.
