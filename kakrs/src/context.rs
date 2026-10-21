@@ -435,11 +435,10 @@ impl Context {
         self.jump_list.borrow_mut().forget_buffer(buffer);
 
         if std::ptr::eq(self.buffer().as_ref(), buffer) {
-            if self.is_editing() {
-                if let Ok(input_handler) = self.try_input_handler() {
+            if self.is_editing()
+                && let Ok(input_handler) = self.try_input_handler() {
                     input_handler.reset_normal_mode()?;
                 }
-            }
             let target = match self.last_buffer() {
                 Some(b) => b,
                 None => BufferManager::instance().get_first_buffer()?,
@@ -468,11 +467,10 @@ impl Context {
     }
 
     pub fn scope_allow_local(&self, allow_local: bool) -> Scope {
-        if allow_local {
-            if let Some(local) = self.local_scopes.borrow().last() {
+        if allow_local
+            && let Some(local) = self.local_scopes.borrow().last() {
                 return local.clone();
             }
-        }
         if let Some(window) = self.window.borrow().as_ref() {
             return window.scope().clone();
         }

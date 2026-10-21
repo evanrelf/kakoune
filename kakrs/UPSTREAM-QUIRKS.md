@@ -107,7 +107,8 @@ handler that backs up modified buffers never runs.
 
 ## Needs decision (C++ undefined behaviour)
 
-- **Inconsistent match ordering** (`ranked_match::sort_matches`): the
+- **Inconsistent match ordering** (`ranked_match::sort_matches`, and the
+  file and command completion sorts in `commands.rs`): the
   `RankedMatch` ordering is not a strict weak order. `'/'` orders like NUL,
   and invalid UTF-8 decodes differently depending on the following bytes. C++
   `std::sort` with such a comparator is undefined behaviour; Rust's `sort_by`

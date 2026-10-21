@@ -33,7 +33,7 @@ pub enum NamedColor {
 pub const RGB: u8 = 17;
 
 /// `a` holds either the named color index (< 17) or the alpha value of an rgb color
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Color {
     pub a: u8,
     pub r: u8,
@@ -69,13 +69,6 @@ impl Default for Color {
         Color::DEFAULT
     }
 }
-
-impl PartialEq for Color {
-    fn eq(&self, o: &Color) -> bool {
-        self.a == o.a && self.r == o.r && self.g == o.g && self.b == o.b
-    }
-}
-impl Eq for Color {}
 
 impl From<NamedColor> for Color {
     fn from(c: NamedColor) -> Color {
@@ -521,13 +514,12 @@ impl FaceRegistry {
         }
         let spec = parse_face(facedesc)?;
         let mut faces = self.faces.borrow_mut();
-        if spec.base == name {
-            if let Some(v) = faces.get_mut(&spec.base) {
+        if spec.base == name
+            && let Some(v) = faces.get_mut(&spec.base) {
                 v.face = merge_faces(&v.face, &spec.face);
                 v.base = spec.base;
                 return Ok(());
             }
-        }
         // [FAITHFUL] this loops forever if the chain reaches a face based on
         // itself (e.g. after add_face("X", "red@X") with no prior X, then
         // add_face("Y", "@X")), as in C++
@@ -571,7 +563,7 @@ pub fn merge_layers<K: Clone + Eq + std::hash::Hash, V: Clone>(layers: Vec<Index
     let mut res: Vec<(K, V)> = Vec::new();
     for layer in layers {
         res.retain(|(k, _)| !layer.contains_key(k));
-        res.extend(layer.into_iter());
+        res.extend(layer);
     }
     res
 }

@@ -355,12 +355,11 @@ impl OptionType for StringMap {
         let mut changed = false;
         for s in strs {
             let (k, v) = split_key_value(s)?;
-            if let Some(cur) = self.get(&k) {
-                if v.is_empty() || v == *cur {
+            if let Some(cur) = self.get(&k)
+                && (v.is_empty() || v == *cur) {
                     self.shift_remove(&k);
                     changed = true;
                 }
-            }
         }
         Ok(changed)
     }

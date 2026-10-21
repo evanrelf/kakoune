@@ -389,7 +389,8 @@ impl<'a> RankedMatch<'a> {
         }
     }
 
-    pub fn cmp(&self, other: &RankedMatch) -> Ordering {
+    /// Not `Ord::cmp`: the ordering is not total, see UPSTREAM-QUIRKS.md
+    pub fn ordering(&self, other: &RankedMatch) -> Ordering {
         if self.less(other) {
             Ordering::Less
         } else if other.less(self) {
@@ -412,7 +413,7 @@ fn char_start_bounded(s: &[u8], mut pos: usize, begin: usize) -> usize {
 /// [DEVIATION] operator< is not a strict weak ordering for candidates with NUL
 /// bytes or invalid utf8: std::sort is UB there, slice::sort_by may panic.
 pub fn sort_matches(matches: &mut [RankedMatch]) {
-    matches.sort_by(|a, b| a.cmp(b));
+    matches.sort_by(|a, b| a.ordering(b));
 }
 
 #[cfg(test)]

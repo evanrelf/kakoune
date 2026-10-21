@@ -159,11 +159,10 @@ pub struct RankedMatchInfo {
 
 impl OptionWatcher for WordDB {
     fn on_option_changed(&self, option: &Opt) -> Result<()> {
-        if option.name() == b"extra_word_chars" {
-            if let Some(buffer) = self.buffer.upgrade() {
+        if option.name() == b"extra_word_chars"
+            && let Some(buffer) = self.buffer.upgrade() {
                 self.rebuild_db(&buffer);
             }
-        }
         Ok(())
     }
 }

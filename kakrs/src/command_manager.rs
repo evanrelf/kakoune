@@ -574,11 +574,10 @@ impl CommandManager {
 
     pub fn register_module(&self, module_name: Vec<u8>, commands: Vec<u8>) -> Result<()> {
         let mut modules = self.modules.borrow_mut();
-        if let Some(m) = modules.get(&module_name) {
-            if m.state != ModuleState::Registered {
+        if let Some(m) = modules.get(&module_name)
+            && m.state != ModuleState::Registered {
                 return Err(rt_err!("module already loaded: '{}'", module_name));
             }
-        }
         modules.insert(module_name, Module { state: ModuleState::Registered, commands });
         Ok(())
     }

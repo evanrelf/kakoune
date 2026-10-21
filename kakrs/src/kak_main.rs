@@ -1277,11 +1277,10 @@ fn main_impl() -> i32 {
                 if list_sessions {
                     write_stdout(&kformat!("{}{}\n", session, if valid { "" } else { " (dead)" }));
                 }
-                if !valid && clear_sessions {
-                    if let Ok(path) = session_path(session, false) {
+                if !valid && clear_sessions
+                    && let Ok(path) = session_path(session, false) {
                         unsafe { libc::unlink(crate::file::cstr(&path).as_ptr()) };
                     }
-                }
             });
             return Ok(0);
         }

@@ -153,7 +153,7 @@ impl FormatParam for Grouped {
         let len = ungrouped.len();
         let mut res = Vec::new();
         for (pos, c) in ungrouped.iter().enumerate() {
-            if !res.is_empty() && (len - pos) % 3 == 0 {
+            if !res.is_empty() && (len - pos).is_multiple_of(3) {
                 res.push(b',');
             }
             res.push(*c);

@@ -82,13 +82,11 @@ pub trait Highlighter {
 
 /// Highlighter::highlight: run if the pass matches, errors go to the debug buffer
 pub fn highlight(hl: &dyn Highlighter, context: &HighlightContext, display_buffer: &mut DisplayBuffer, range: BufferRange) {
-    if context.pass.has(hl.passes()) {
-        if let Err(error) = hl.do_highlight(context, display_buffer, range) {
-            if error.is_runtime() {
+    if context.pass.has(hl.passes())
+        && let Err(error) = hl.do_highlight(context, display_buffer, range)
+            && error.is_runtime() {
                 write_to_debug_buffer(&kformat!("Error while highlighting: {}", error.what()));
             }
-        }
-    }
 }
 
 /// Highlighter::compute_display_setup

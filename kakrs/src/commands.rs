@@ -182,8 +182,8 @@ fn complete_buffer_name_impl(context: &Context, prefix: &[u8], cursor_pos: usize
             matches.push((m, i));
         }
     }
-    filename_matches.sort_by(|a, b| a.0.cmp(&b.0));
-    matches.sort_by(|a, b| a.0.cmp(&b.0));
+    filename_matches.sort_by(|a, b| a.0.ordering(&b.0));
+    matches.sort_by(|a, b| a.0.ordering(&b.0));
 
     let mut res = CandidateList::new();
     for (_, i) in filename_matches.iter().chain(matches.iter()) {
@@ -258,11 +258,14 @@ impl AsyncShellScript {
     }
 }
 
+type LineHandler = Rc<dyn Fn(&[u8])>;
+type RankedCandidates = Vec<(Vec<u8>, UsedLetters)>;
+
 fn spawn_script(
     state: &Rc<AsyncShellScript>,
     context: &Context,
     shell_context: &ShellContext,
-    handle_line: Rc<dyn Fn(&[u8])>,
+    handle_line: LineHandler,
 ) -> Result<()> {
     let shell = ShellManager::instance().spawn(&state.shell_script, context, false, shell_context)?;
     let fd = shell.out.fd();
@@ -278,7 +281,7 @@ fn spawn_script(
     Ok(())
 }
 
-fn read_stdout(state: &Rc<AsyncShellScript>, input_handler: &Option<Weak<InputHandler>>, handle_line: &Rc<dyn Fn(&[u8])>) {
+fn read_stdout(state: &Rc<AsyncShellScript>, input_handler: &Option<Weak<InputHandler>>, handle_line: &LineHandler) {
     let mut buffer = [0u8; 2048];
     let mut closed = false;
     let fd = match state.running_script.borrow().as_ref() {
@@ -358,7 +361,7 @@ fn shell_script_completer(shell_script: Vec<u8>, flags: CompletionFlags) -> Comm
 fn shell_candidates_completer(shell_script: Vec<u8>, flags: CompletionFlags) -> CommandCompleter {
     struct State {
         script: Rc<AsyncShellScript>,
-        candidates: Rc<RefCell<Vec<(Vec<u8>, UsedLetters)>>>,
+        candidates: Rc<RefCell<RankedCandidates>>,
         last_token: Cell<i64>,
     }
     let state = Rc::new(State {
@@ -546,11 +549,10 @@ fn edit_impl(parser: &ParametersParser, context: &Context, force_reload: bool) -
     let buffer = buffer.unwrap();
     let current_buffer = context.try_buffer().ok();
     let param_count = parser.positional_count();
-    if let Some(current) = &current_buffer {
-        if !Rc::ptr_eq(&buffer, current) || param_count > 1 {
+    if let Some(current) = &current_buffer
+        && (!Rc::ptr_eq(&buffer, current) || param_count > 1) {
             context.push_jump(false);
         }
-    }
 
     if current_buffer.as_ref().is_none_or(|c| !Rc::ptr_eq(&buffer, c)) {
         context.change_buffer(&buffer, None)?;
@@ -934,8 +936,8 @@ fn redraw_relevant_clients(root: &Rc<HighlighterGroup>) {
 }
 
 fn add_highlighter_helper(_: &Context, params: &[Vec<u8>]) -> Vec<u8> {
-    if params.len() > 1 {
-        if let Some(entry) = HighlighterRegistry::instance().get(&params[1]) {
+    if params.len() > 1
+        && let Some(entry) = HighlighterRegistry::instance().get(&params[1]) {
             let docstring = entry.description.docstring.as_bytes();
             let desc_params = generate_switches_doc(&entry.description.params.switches);
             if desc_params.is_empty() {
@@ -947,7 +949,6 @@ fn add_highlighter_helper(_: &Context, params: &[Vec<u8>]) -> Vec<u8> {
                 .collect();
             return kformat!("{}:\n{}", params[1], join_str(&parts, b"\n"));
         }
-    }
     Vec::new()
 }
 
@@ -1035,8 +1036,8 @@ fn remove_hook_completer() -> CommandCompleter {
     Rc::new(|context: &Context, params: &[Vec<u8>], token_to_complete: usize, pos_in_token: usize| {
         if token_to_complete == 0 {
             return menu(ps(complete_scope))(context, &params[0], pos_in_token);
-        } else if token_to_complete == 1 {
-            if let Ok(Some(scope)) = get_scope_ifp(&params[0], context) {
+        } else if token_to_complete == 1
+            && let Ok(Some(scope)) = get_scope_ifp(&params[0], context) {
                 return Completions::with(
                     0,
                     params[0].len(),
@@ -1044,7 +1045,6 @@ fn remove_hook_completer() -> CommandCompleter {
                     CompletionFlags::Menu,
                 );
             }
-        }
         Completions::default()
     })
 }
@@ -1450,9 +1450,8 @@ fn set_option_completer() -> CommandCompleter {
         } else if token_to_complete == 2
             && params[2].is_empty()
             && GlobalScope::instance().option_registry().option_exists(&params[1])
-        {
-            if let Ok(scope) = get_scope(&params[0], context) {
-                if let Ok(opt) = scope.options().get(&params[1]) {
+            && let Ok(scope) = get_scope(&params[0], context)
+                && let Ok(opt) = scope.options().get(&params[1]) {
                     return Completions::with(
                         0,
                         params[2].len(),
@@ -1460,8 +1459,6 @@ fn set_option_completer() -> CommandCompleter {
                         CompletionFlags::Quoted,
                     );
                 }
-            }
-        }
         Completions::default()
     })
 }
@@ -1601,11 +1598,10 @@ fn unmap_key(parser: &ParametersParser, context: &Context, _: &ShellContext) -> 
         return Err(Error::runtime("only a single key can be unmapped"));
     }
 
-    if let Some(mapping) = keymaps.get_mapping(key[0], keymap_mode) {
-        if parser.positional_count() < 4 || mapping.keys == parse_keys(&parser[3])? {
+    if let Some(mapping) = keymaps.get_mapping(key[0], keymap_mode)
+        && (parser.positional_count() < 4 || mapping.keys == parse_keys(&parser[3])?) {
             keymaps.unmap_key(key[0], keymap_mode);
         }
-    }
     Ok(())
 }
 
@@ -2126,7 +2122,7 @@ pub fn register_commands() {
         let func = c.func;
         cm.register_command(
             c.name.as_bytes().to_vec(),
-            Rc::new(move |p, ctx, sc| func(p, ctx, sc)),
+            Rc::new(func),
             c.docstring.as_bytes().to_vec(),
             c.params,
             c.flags,
@@ -2895,7 +2891,7 @@ fn command_descs() -> Vec<CommandDesc> {
                     return Completions::with(
                         0,
                         params[0].len(),
-                        complete(&params[0], pos_in_token, &context.keymaps().user_modes()),
+                        complete(&params[0], pos_in_token, context.keymaps().user_modes()),
                         CompletionFlags::Menu,
                     );
                 }

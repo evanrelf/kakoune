@@ -431,8 +431,8 @@ impl Client {
                 state.menu.ui_anchor = anchor;
             }
 
-            if state.ui_pending & pending::MENU_SHOW != 0 {
-                if let Some(anchor) = state.menu.ui_anchor {
+            if state.ui_pending & pending::MENU_SHOW != 0
+                && let Some(anchor) = state.menu.ui_anchor {
                     self.ui.menu_show(
                         &state.menu.items,
                         anchor,
@@ -441,7 +441,6 @@ impl Client {
                         state.menu.style.unwrap_or(MenuStyle::Prompt),
                     );
                 }
-            }
             if state.ui_pending & pending::MENU_SELECT != 0 && state.menu.ui_anchor.is_some() {
                 self.ui.menu_select(state.menu.selected);
             }
@@ -462,8 +461,8 @@ impl Client {
                 state.info.ui_anchor = anchor;
             }
 
-            if state.ui_pending & pending::INFO_SHOW != 0 {
-                if let Some(anchor) = state.info.ui_anchor {
+            if state.ui_pending & pending::INFO_SHOW != 0
+                && let Some(anchor) = state.info.ui_anchor {
                     let style = state.info.style.unwrap_or(InfoStyle::Prompt);
                     let face = faces.face(if is_inline(style) || style == InfoStyle::MenuDoc {
                         "InlineInformation"
@@ -472,7 +471,6 @@ impl Client {
                     });
                     self.ui.info_show(&state.info.title, &state.info.content, anchor, face, style);
                 }
-            }
             if state.ui_pending & pending::INFO_HIDE != 0 {
                 self.ui.info_hide();
             }

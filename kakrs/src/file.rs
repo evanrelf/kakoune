@@ -617,10 +617,9 @@ mod tests {
         const C2: u32 = 0x1b873593;
         let mix = |k: u32| k.wrapping_mul(C1).rotate_left(15).wrapping_mul(C2);
         let mut h: u32 = 0x1235678;
-        let chunks = data.chunks_exact(4);
-        let tail = chunks.remainder();
+        let (chunks, tail) = data.as_chunks::<4>();
         for c in chunks {
-            h ^= mix(u32::from_le_bytes(c.try_into().unwrap()));
+            h ^= mix(u32::from_le_bytes(*c));
             h = h.rotate_left(13).wrapping_mul(5).wrapping_add(0xe6546b64);
         }
         if !tail.is_empty() {

@@ -471,12 +471,11 @@ impl Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        if let Some(key) = self.key {
-            if EventManager::has_instance() {
+        if let Some(key) = self.key
+            && EventManager::has_instance() {
                 let removed = EventManager::instance().timers.borrow_mut().remove(key);
                 drop(removed);
             }
-        }
     }
 }
 

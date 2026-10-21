@@ -322,8 +322,8 @@ fn goto_commands(context: &Context, params: NormalParams, mode: SelectMode) -> R
                     let offset = (if lower_cp == 'd' as u32 { 1 } else { -1 }) * params.count.max(1);
                     select(context, mode, &|context, sel| {
                         let mut cursor = sel.cursor();
-                        if let Ok(window) = context.try_window() {
-                            if let Some(mut display_coord) = window.display_coord(cursor.coord) {
+                        if let Ok(window) = context.try_window()
+                            && let Some(mut display_coord) = window.display_coord(cursor.coord) {
                                 if cursor.display_target == -1 {
                                     cursor.display_target = display_coord.column;
                                 }
@@ -336,7 +336,6 @@ fn goto_commands(context: &Context, params: NormalParams, mode: SelectMode) -> R
                                     ))));
                                 }
                             }
-                        }
                         let tabstop = context.options().val::<i32>("tabstop");
                         Ok(Some(Selection::new(context.buffer().offset_coord_lines(cursor, offset, tabstop))))
                     })
@@ -380,12 +379,11 @@ fn goto_commands(context: &Context, params: NormalParams, mode: SelectMode) -> R
                         }
                     }
 
-                    if let Some(buffer_main) = buffer_main {
-                        if !Rc::ptr_eq(&buffer_main, &context.buffer()) {
+                    if let Some(buffer_main) = buffer_main
+                        && !Rc::ptr_eq(&buffer_main, &context.buffer()) {
                             context.push_jump(false);
                             context.change_buffer(&buffer_main, None)?;
                         }
-                    }
                     Ok(())
                 }
                 '.' => {
@@ -674,11 +672,10 @@ impl OwnedSelectionEdition {
 
 impl Drop for OwnedSelectionEdition {
     fn drop(&mut self) {
-        if self.valid {
-            if let Some(ih) = self.input_handler.upgrade() {
+        if self.valid
+            && let Some(ih) = self.input_handler.upgrade() {
                 ih.context().end_selection_edition();
             }
-        }
     }
 }
 
@@ -1048,11 +1045,10 @@ fn regex_prompt(context: &Context, prompt: Vec<u8>, reg: u8, mode: u8, func: Reg
         Rc::new(move |s: &[u8], event: PromptEvent, context: &Context| {
             let _ = &selection_edition;
             let res = (|| -> Result<()> {
-                if event != PromptEvent::Change {
-                    if let Ok(client) = context.try_client() {
+                if event != PromptEvent::Change
+                    && let Ok(client) = context.try_client() {
                         client.info_hide(false);
                     }
-                }
 
                 let incsearch = context.options().val::<bool>("incsearch");
                 if incsearch {
@@ -1759,8 +1755,8 @@ fn select_object(context: &Context, params: NormalParams, flags: ObjectFlags, mo
                 return select_and_set_last(context, mode, regex_selector(&open_re, &close_re, count, flags)?);
             }
 
-            if let Some(cp) = pressed.codepoint() {
-                if is_punctuation(cp, &[]) {
+            if let Some(cp) = pressed.codepoint()
+                && is_punctuation(cp, &[]) {
                     let re = kformat!("\\Q{}", crate::format::Cp(cp));
                     if nested {
                         let regex = Regex::new(&re, RegexCompileFlags::NONE)?;
@@ -1773,7 +1769,6 @@ fn select_object(context: &Context, params: NormalParams, flags: ObjectFlags, mo
                     }
                     return select_and_set_last(context, mode, regex_selector(&re, &re, count, flags)?);
                 }
-            }
             Ok(())
         }),
         get_title(),

@@ -155,7 +155,7 @@ fn same_mode(a: &Rc<dyn InputMode>, b: &dyn InputMode) -> bool {
 }
 
 fn default_paste(context: &Context, content: &[u8]) -> Result<()> {
-    let res = (|| -> Result<()> {
+    let res = {
         let buffer = context.buffer();
         let linewise = content.last() == Some(&b'\n');
         let _edition = ScopedEdition::new(context);
@@ -170,7 +170,7 @@ fn default_paste(context: &Context, content: &[u8]) -> Result<()> {
             },
             false,
         )
-    })();
+    };
     match res {
         Ok(()) => Ok(()),
         Err(error) if error.is_runtime() => {
@@ -485,11 +485,10 @@ impl Normal {
             *do_restore_hooks = true;
             let res = if let Some(command) = get_normal_command(key) {
                 let autoinfo = context.options().val::<AutoInfo>("autoinfo");
-                if autoinfo.has(AutoInfo::Normal) {
-                    if let Ok(client) = context.try_client() {
+                if autoinfo.has(AutoInfo::Normal)
+                    && let Ok(client) = context.try_client() {
                         client.info_show_str(&key_to_str(key), command.docstring.as_bytes(), BufferCoord::default(), InfoStyle::Prompt);
                     }
-                }
 
                 // reset params now to be reentrant
                 let params = self.params.replace(NormalParams { count: 0, reg: 0 });
@@ -508,11 +507,10 @@ impl Normal {
         }
 
         context.hooks().run_hook(Hook::NormalKey, &key_to_str(key), context)?;
-        if *should_clear && !transient {
-            if let Ok(client) = context.try_client() {
+        if *should_clear && !transient
+            && let Ok(client) = context.try_client() {
                 client.schedule_clear();
             }
-        }
         if self.enabled() && !transient {
             // The hook might have changed mode
             self.idle_timer.set_next_date(now_plus(get_idle_timeout(context)));
@@ -1053,11 +1051,10 @@ impl Prompt {
             while let Ok(Some(token)) = parser.read_token(false) {
                 last_token = Some(token);
             }
-            if let Some(t) = &last_token {
-                if t.pos + t.content.len() < cursor_pos {
+            if let Some(t) = &last_token
+                && t.pos + t.content.len() < cursor_pos {
                     last_token = None;
                 }
-            }
             let token_start = last_token.as_ref().map_or(cursor_pos, |t| t.pos);
             let token_content = last_token.as_ref().map_or(&[][..], |t| t.content.as_slice());
             Completions::with(token_start, cursor_pos, completer(context, token_content), CompletionFlags::None)
@@ -1531,9 +1528,9 @@ impl InputMode for Prompt {
         self.display();
         let ih = self.input_handler();
         let context = ih.context();
-        if from_pop {
-            if let Ok(client) = context.try_client() {
-                if !self.state.borrow().completions.candidates.is_empty() {
+        if from_pop
+            && let Ok(client) = context.try_client()
+                && !self.state.borrow().completions.candidates.is_empty() {
                     self.show_completions();
                     let s = self.state.borrow();
                     let menu = s.completions.flags.has(CompletionFlags::Menu);
@@ -1543,8 +1540,6 @@ impl InputMode for Prompt {
                         client.menu_select(0);
                     }
                 }
-            }
-        }
         if !is_draft(context) {
             self.idle_timer.set_next_date(now_plus(get_idle_timeout(context)));
         }
@@ -2483,11 +2478,10 @@ pub fn show_auto_info_ifn(title: &[u8], info: &[u8], mask: AutoInfo, context: &C
 }
 
 pub fn hide_auto_info_ifn(context: &Context, hide: bool) {
-    if hide {
-        if let Ok(client) = context.try_client() {
+    if hide
+        && let Ok(client) = context.try_client() {
             client.info_hide(false);
         }
-    }
 }
 
 pub fn on_next_key_with_autoinfo(
