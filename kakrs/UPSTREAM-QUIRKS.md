@@ -97,6 +97,14 @@ handler that backs up modified buffers never runs.
 - **The used letters precheck** can reject non ASCII matches the full matcher
   would accept through `towlower` (e.g. KELVIN SIGN for `k`).
 
+## Performance
+
+- **Undo after many scattered edits** (`compute_modified_ranges`): when the
+  changes are not sorted, each one is merged into the ranges separately,
+  which is quadratic in the number of changes. Undoing an erase of every
+  `foo` in a 200k line file takes seconds (the port matches the C++, and is
+  a bit faster).
+
 ## Needs decision (C++ undefined behaviour)
 
 - **Inconsistent match ordering** (`ranked_match::sort_matches`): the

@@ -127,7 +127,9 @@ impl Client {
                 on_exit,
                 env_vars,
                 input_handler,
-                state: RefCell::new(ClientState { status_cursor_pos: -1, ..Default::default() }),
+                // [DEVIATION] the C++ leaves m_status_cursor_pos uninitialized
+                // until the first print_status; it reads as 0 in practice.
+                state: RefCell::new(ClientState { status_cursor_pos: 0, ..Default::default() }),
                 self_weak: w.clone(),
             }
         });

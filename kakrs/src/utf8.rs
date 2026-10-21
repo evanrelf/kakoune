@@ -13,6 +13,22 @@ pub trait ByteIt: Clone + PartialEq + PartialOrd {
     fn get(&self) -> u8;
     fn inc(&mut self);
     fn dec(&mut self);
+
+    /// Move forward to the first byte equal to `byte`, or to `end`
+    #[inline]
+    fn seek_byte(&mut self, end: &Self, byte: u8) {
+        while self != end && self.get() != byte {
+            self.inc();
+        }
+    }
+
+    /// Move forward to the first byte for which `map` is true, or to `end`
+    #[inline]
+    fn seek_in_map(&mut self, end: &Self, map: &[bool; 256]) {
+        while self != end && !map[self.get() as usize] {
+            self.inc();
+        }
+    }
 }
 
 #[inline]
@@ -513,6 +529,14 @@ impl ByteIt for SliceIt<'_> {
     fn dec(&mut self) {
         self.pos -= 1;
     }
+    #[inline]
+    fn seek_byte(&mut self, end: &Self, byte: u8) {
+        self.pos = memchr::memchr(byte, &self.s[self.pos..end.pos]).map_or(end.pos, |p| self.pos + p);
+    }
+    #[inline]
+    fn seek_in_map(&mut self, end: &Self, map: &[bool; 256]) {
+        self.pos = self.s[self.pos..end.pos].iter().position(|&b| map[b as usize]).map_or(end.pos, |p| self.pos + p);
+    }
 }
 
 #[cfg(test)]
@@ -614,6 +638,25 @@ mod tests {
         }
         assert_eq!(char_indices(&s).collect::<Vec<_>>(), expected);
         assert_eq!(codepoints(&s).collect::<Vec<_>>(), expected.iter().map(|(_, c)| *c).collect::<Vec<_>>());
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn slice_seeks_match_stepping_byte_by_byte(tc: TestCase) {
+        let s = tc.draw(any_bytes());
+        let a = tc.draw(gs::integers::<usize>().max_value(s.len()));
+        let b = tc.draw(gs::integers::<usize>().min_value(a).max_value(s.len()));
+        let byte = tc.draw(gs::integers::<u8>());
+        let mut map = [false; 256];
+        for m in tc.draw(gs::vecs(gs::integers::<u8>()).max_size(4)) {
+            map[m as usize] = true;
+        }
+        let end = SliceIt::new(&s, b);
+        let mut it = SliceIt::new(&s, a);
+        it.seek_byte(&end, byte);
+        assert_eq!(it.pos, (a..b).find(|&i| s[i] == byte).unwrap_or(b));
+        let mut it = SliceIt::new(&s, a);
+        it.seek_in_map(&end, &map);
+        assert_eq!(it.pos, (a..b).find(|&i| map[s[i] as usize]).unwrap_or(b));
     }
 
     #[test]

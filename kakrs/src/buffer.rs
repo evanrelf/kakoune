@@ -1140,6 +1140,28 @@ impl PartialOrd for BufferIterator<'_> {
     }
 }
 
+impl BufferIterator<'_> {
+    /// Move forward line by line, `find` returning the offset of the target
+    /// byte in the part of the line it is given, stopping at `end`
+    #[inline]
+    fn seek(&mut self, end: &Self, find: impl Fn(&[u8]) -> Option<usize>) {
+        while self.coord < end.coord {
+            let line = &self.lines[self.coord.line as usize];
+            let stop = if self.coord.line == end.coord.line { end.coord.column as usize } else { line.len() };
+            let start = self.coord.column as usize;
+            if let Some(p) = find(&line[start..stop]) {
+                self.coord.column = (start + p) as ByteCount;
+                return;
+            }
+            if self.coord.line == end.coord.line {
+                self.coord = end.coord;
+                return;
+            }
+            self.coord = BufferCoord::line(self.coord.line + 1);
+        }
+    }
+}
+
 impl crate::utf8::ByteIt for BufferIterator<'_> {
     #[inline]
     fn get(&self) -> u8 {
@@ -1161,6 +1183,14 @@ impl crate::utf8::ByteIt for BufferIterator<'_> {
         } else {
             self.coord.column -= 1;
         }
+    }
+    #[inline]
+    fn seek_byte(&mut self, end: &Self, byte: u8) {
+        self.seek(end, |s| memchr::memchr(byte, s));
+    }
+    #[inline]
+    fn seek_in_map(&mut self, end: &Self, map: &[bool; 256]) {
+        self.seek(end, |s| s.iter().position(|&b| map[b as usize]));
     }
 }
 
@@ -1522,6 +1552,37 @@ mod tests {
             .sum();
         assert_eq!(lines_before + delta, buffer.line_count());
         assert_eq!(buffer.changes_since(buffer.timestamp()), vec![]);
+    }
+
+    #[hegel::test(test_cases = 1000)]
+    fn seeks_match_stepping_byte_by_byte(tc: TestCase) {
+        let buffer = make_buffer(&tc.draw(text()));
+        let content = buffer_content(&buffer);
+        let a = tc.draw(gs::integers::<usize>().max_value(content.len()));
+        let b = tc.draw(gs::integers::<usize>().min_value(a).max_value(content.len()));
+        let byte = tc.draw(gs::sampled_from(vec![b'a', b' ', b'\n', 0xC3, 0x82, b'z']));
+        let mut map = [false; 256];
+        for m in tc.draw(gs::vecs(gs::integers::<u8>()).max_size(4)) {
+            map[m as usize] = true;
+        }
+        let lines = buffer.lines();
+        let (begin, end) = (BufferIterator::new(&lines, coord_of(&content, a)), BufferIterator::new(&lines, coord_of(&content, b)));
+
+        let mut expected = begin;
+        while expected != end && expected.get() != byte {
+            expected.inc();
+        }
+        let mut it = begin;
+        it.seek_byte(&end, byte);
+        assert_eq!(it.coord(), expected.coord());
+
+        let mut expected = begin;
+        while expected != end && !map[expected.get() as usize] {
+            expected.inc();
+        }
+        let mut it = begin;
+        it.seek_in_map(&end, &map);
+        assert_eq!(it.coord(), expected.coord());
     }
 
     #[test]

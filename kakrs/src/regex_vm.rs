@@ -2153,10 +2153,10 @@ impl<'p, I: ByteIt, M: VmMode> ThreadedRegexVM<'p, I, M> {
         if start_byte != 0 {
             while &pos != end {
                 if M::FORWARD {
-                    if pos.get() == start_byte {
+                    pos.seek_byte(end, start_byte);
+                    if &pos != end {
                         return advance(pos, start, -(start_desc.offset as CharCount));
                     }
-                    pos.inc();
                 } else {
                     let prev = it_previous(&pos, end);
                     if prev.get() == start_byte {
@@ -2169,10 +2169,10 @@ impl<'p, I: ByteIt, M: VmMode> ThreadedRegexVM<'p, I, M> {
 
         while &pos != end {
             if M::FORWARD {
-                if start_desc.map[pos.get() as usize] {
+                pos.seek_in_map(end, &start_desc.map);
+                if &pos != end {
                     return advance(pos, start, -(start_desc.offset as CharCount));
                 }
-                pos.inc();
             } else {
                 let prev = it_previous(&pos, end);
                 if start_desc.map[prev.get() as usize] {

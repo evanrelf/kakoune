@@ -296,11 +296,14 @@ struct RegexCache {
     timestamp: usize,
     regex_version: usize,
     matches: HashMap<BufferRange, Vec<RangeAndMatches>>,
+    /// Total number of RangeAndMatches in `matches`, kept up to date rather
+    /// than summed on every lookup (the C++ sums them each time)
+    range_count: usize,
 }
 
 impl Default for RegexCache {
     fn default() -> Self {
-        RegexCache { timestamp: usize::MAX, regex_version: usize::MAX, matches: HashMap::new() }
+        RegexCache { timestamp: usize::MAX, regex_version: usize::MAX, matches: HashMap::new(), range_count: 0 }
     }
 }
 
@@ -411,9 +414,10 @@ impl RegexHighlighter {
     ) -> &'c MatchList {
         if cache.regex_version != state.regex_version
             || cache.timestamp != buffer.timestamp()
-            || cache.matches.values().map(|m| m.len()).sum::<usize>() > 1000
+            || cache.range_count > 1000
         {
             cache.matches.clear();
+            cache.range_count = 0;
             cache.timestamp = buffer.timestamp();
             cache.regex_version = state.regex_version;
         }
@@ -430,6 +434,7 @@ impl RegexHighlighter {
 
         if it == matches.len() || matches[it].range.begin > range.end {
             matches.insert(it, RangeAndMatches { range, matches: MatchList::new() });
+            cache.range_count += 1;
             Self::add_matches(state, buffer, &mut matches[it].matches, range);
         } else if matches[it].matches.is_empty() {
             matches[it].range = range;
