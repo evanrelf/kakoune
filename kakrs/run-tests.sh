@@ -5,6 +5,8 @@ set -e
 here=$(cd "$(dirname "$0")" && pwd)
 cargo build --manifest-path "$here/Cargo.toml" ${CARGO_FLAGS} >&2
 kak="$here/target/${PROFILE:-debug}/kak"
+# the C++ finds share/kak relative to src/kak, ours lives in target/
+export KAKOUNE_RUNTIME="$here/../share/kak"
 runner=$(mktemp "${TMPDIR:-/tmp}/kakrs-run.XXXXXX")
 trap 'rm -f "$runner"' EXIT
 sed "s|kak=\"\$(realpath \$testdir)/../src/kak\"|kak=\"$kak\"|" "$here/../test/run" > "$runner"
