@@ -144,11 +144,10 @@ impl EventManager {
             }
         }
 
-        // Deviation: the C++ resets the timeout here (blocking), a regression from
-        // the commit that introduced the timeout parameter, where a forced fd used
-        // to mean "do not block". See PORTING.md.
+        // [FAITHFUL] a forced fd resets (rather than zeroes) the timeout, so
+        // this blocks; see UPSTREAM-QUIRKS.md
         if HAS_FORCED_FD.load(Ordering::SeqCst) {
-            timeout = Some(Duration::ZERO);
+            timeout = None;
         }
 
         let next_date = self.timers.borrow().iter().filter_map(|(_, t)| t.date).min();

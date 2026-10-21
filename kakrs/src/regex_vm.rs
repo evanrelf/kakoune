@@ -658,7 +658,7 @@ impl<'r> RegexParser<'r> {
                     } else if r[it] == b'<' {
                         it += 1;
                         let name_start = it;
-                        // C++ converts the (signed) char to a Codepoint
+                        // [FAITHFUL] the (signed) char is sign extended to a Codepoint
                         while it != r.len() && is_word_default(r[it] as i8 as i32 as Codepoint) {
                             it += 1;
                         }
@@ -1794,6 +1794,8 @@ struct ExecConfig<I> {
 }
 
 /// Number of saves whose validity is tracked with the valid mask
+// [DEVIATION] the C++ shifts a 32 bit mask by the save index, undefined
+// behaviour past 32 saves; saves past that are cleared when allocated instead
 const MASKED_SAVES: usize = 32;
 
 pub struct ThreadedRegexVM<'p, I: ByteIt, M: VmMode> {
@@ -2089,7 +2091,8 @@ impl<'p, I: ByteIt, M: VmMode> ThreadedRegexVM<'p, I, M> {
             if current_step == 0 {
                 idle_count = idle_count.wrapping_add(1);
                 if idle_count == 0 && idle_func().is_break() {
-                    // Abort the search (C++ unwinds through here with an exception)
+                    // [DEVIATION] abort the search, where the C++ unwinds through here
+                    // with an exception
                     while !self.threads.current_is_empty() {
                         let thread = self.threads.pop_current();
                         self.release_saves(thread.saves);

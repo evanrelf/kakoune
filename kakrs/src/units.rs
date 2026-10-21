@@ -21,6 +21,9 @@ impl BufferCoord {
     }
 }
 
+// [DEVIATION] coordinate arithmetic overflow is UB in C++ (signed int), it
+// panics in debug builds and wraps in release builds here (all the operators
+// below, for both BufferCoord and DisplayCoord)
 impl std::ops::Add for BufferCoord {
     type Output = BufferCoord;
     fn add(self, o: BufferCoord) -> BufferCoord {
@@ -186,8 +189,8 @@ mod tests {
     use hegel::generators as gs;
     use hegel::TestCase;
 
-    // Coordinates within a range where sums cannot overflow (as in C++,
-    // where signed overflow is undefined behaviour)
+    // [DEVIATION] Coordinates within a range where sums cannot overflow
+    // (signed overflow is UB in C++, a panic in debug builds here)
     fn coord_part() -> impl hegel::PrintableGenerator<i32> {
         gs::integers::<i32>().min_value(i32::MIN / 2).max_value(i32::MAX / 2)
     }

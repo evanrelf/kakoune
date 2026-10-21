@@ -69,8 +69,8 @@ fn spaces(count: ColumnCount) -> Vec<u8> {
     vec![b' '; count.max(0) as usize]
 }
 
-/// C++ converts a (signed) char to a Codepoint, non ascii bytes end up as
-/// huge codepoints that never match any character class.
+// [FAITHFUL] C++ converts a (signed) char to a Codepoint, non ascii bytes end
+// up as huge codepoints that never match any character class.
 fn char_to_codepoint(c: u8) -> Codepoint {
     c as i8 as i32 as Codepoint
 }
@@ -114,8 +114,9 @@ fn expand_expr(expr: &[u8], context: &Context) -> Result<Vec<u8>> {
     expand(expr, context, &ShellContext::default())
 }
 
-/// codepoint at coord, tolerating one past the end of line coords (which in
-/// the C++ code read the terminating nul character)
+// [DEVIATION] is_bow/is_eow tolerating one past the end of line coords: the
+// C++ reads past the line there (its terminating nul character), we compute
+// the same result (a non word character) without the out of range access.
 fn is_bow_tolerant(buffer: &Buffer, coord: BufferCoord) -> bool {
     if !buffer.is_end(coord) && coord.column >= buffer.line_length(coord.line) {
         return false;
@@ -315,6 +316,7 @@ impl RegexState {
             return;
         }
 
+        // [DEVIATION] stable sort, std::sort leaves the order of equal captures unspecified
         self.faces.sort_by_key(|f| f.0);
         if self.faces[0].0 != 0 {
             self.faces.insert(0, (0, FaceSpec::default()));
@@ -390,6 +392,8 @@ impl RegexHighlighter {
         while let Some(m) = it.next_match() {
             for face in &state.faces {
                 let sub = &m[face.0];
+                // [FAITHFUL] unmatched captures give an empty {0,0} range (C++
+                // default constructed iterators), which highlight_range ignores
                 matches.push(BufferRange::new(
                     sub.first.map(|i| i.coord()).unwrap_or_default(),
                     sub.second.map(|i| i.coord()).unwrap_or_default(),
@@ -750,6 +754,7 @@ fn create_column_highlighter(params: HighlighterParameters, _: Option<&dyn Highl
                     if highlight_non_blank {
                         atom.face = merge_faces(&atom.face, &face);
                     } else if atom.content().first().is_some_and(|&c| is_blank(char_to_codepoint(c))) {
+                        // [DEVIATION] the C++ reads content()[0] even when the content is empty
                         atom.replace_text(col_char.clone());
                         atom.face = merge_faces(&atom.face, &face);
                     }
@@ -814,6 +819,7 @@ impl WrapHighlighter {
     fn next_split_pos(&self, line: &DisplayLine, pos: &mut SplitPos, wrap_column: ColumnCount, prefix_len: ColumnCount) -> bool {
         let atoms = line.atoms();
         let line_end = atoms.len();
+        // [DEVIATION] the C++ dereferences the end iterator on an empty line
         if pos.atom_it >= line_end {
             return false;
         }
@@ -977,6 +983,8 @@ impl Highlighter for WrapHighlighter {
             let prefix_len = marker_len.max(indent);
 
             let mut pos = SplitPos::default();
+            // [FAITHFUL] loops forever when a line starts with a codepoint wider
+            // than the wrap column (each new line splits at its first atom again)
             while self.next_split_pos(&lines[it], &mut pos, wrap_column, prefix_len) {
                 let line = &mut lines[it];
 
@@ -1067,6 +1075,8 @@ impl Highlighter for TabulationHighlighter {
 
                 debug_assert!(pos <= begin.column as usize);
                 let end = line.atoms()[atom_it].end().column as usize;
+                // [DEVIATION] `pos < end` where the C++ loops on `pos != end`, which
+                // would run past the line if an atom ended before pos
                 while pos < end {
                     let Some(next_tab) = memchr::memchr(b'\t', &data[pos..end]).map(|p| p + pos) else {
                         pos = end;
@@ -1096,6 +1106,8 @@ impl Highlighter for TabulationHighlighter {
                 if atom_it >= line.len() {
                     break;
                 }
+                // [FAITHFUL] when a tab ended the atom, atom_it already points to the
+                // next atom, which this increment skips (its tabs are not expanded)
                 atom_it += 1;
             }
         }
@@ -1506,6 +1518,7 @@ fn show_matching_char(
         let mut level = 0;
         if m % 2 == 0 {
             let opening = matching_pairs[m];
+            // [DEVIATION] the C++ reads past the end of an odd length matching_pairs
             let Some(&closing) = matching_pairs.get(m + 1) else { continue };
             while it.base().coord() <= range.end {
                 let c = it.get();
@@ -1518,6 +1531,8 @@ fn show_matching_char(
                         break;
                     }
                 }
+                // [DEVIATION] the C++ dereferences the buffer end iterator (and never
+                // moves past it) when the display range reaches the buffer end
                 if it.at_end() {
                     break;
                 }
@@ -1620,6 +1635,7 @@ fn expand_unprintable(context: &HighlightContext, display_buffer: &mut DisplayBu
 
             let begin = line.atoms()[atom_it].begin();
             let line_data = buffer.line(begin.line);
+            // [DEVIATION] the C++ does not bound the atom end to the line data
             let end = (line.atoms()[atom_it].end().column as usize).min(line_data.len());
             let mut it = begin.column as usize;
             while it < end {
@@ -1687,6 +1703,7 @@ impl OptionElem for LineAndSpec {
     }
     /// option_list_postprocess
     fn list_postprocess(list: &mut Vec<Self>) {
+        // [DEVIATION] stable sort, std::sort leaves the order of equal lines unspecified
         list.sort_by_key(|l| l.0);
     }
 }
@@ -1780,8 +1797,9 @@ impl Highlighter for FlagLinesHighlighter {
             width = width.max(l.length());
         }
         let empty = DisplayAtom::text(spaces(width), def_face);
-        // Atoms are moved out of the flag display lines in the C++ code, which
-        // leaves empty atoms behind when a buffer line is displayed multiple times
+        // [FAITHFUL] Atoms are moved out of the flag display lines in the C++ code,
+        // which leaves empty atoms behind when a buffer line is displayed multiple
+        // times (wrapped lines then get empty atoms and a full width padding)
         let take_atoms = |display_line: &mut DisplayLine| -> Vec<DisplayAtom> {
             display_line
                 .atoms_mut()
@@ -1948,6 +1966,7 @@ impl OptionElem for RangeAndString {
     }
     /// option_list_postprocess
     fn list_postprocess(list: &mut Vec<Self>) {
+        // [DEVIATION] stable sort, std::sort leaves the order of equal ranges unspecified
         list.sort_by(option_element_compare);
     }
     /// option_add_from_strings
@@ -1958,7 +1977,7 @@ impl OptionElem for RangeAndString {
         }
         let middle = list.len();
         list.extend(vec);
-        list[middle..].sort_by(option_element_compare);
+        list[middle..].sort_by(option_element_compare); // [DEVIATION] stable sort
         inplace_merge(list, middle, |lhs, rhs| option_element_compare(lhs, rhs) == std::cmp::Ordering::Less);
         Ok(true)
     }
@@ -2322,6 +2341,8 @@ impl RegexMatch {
             return &[];
         }
         let line: &[u8] = &lines[self.line as usize];
+        // [DEVIATION] clamped, the C++ substr can go out of range when the
+        // capture started before the match (wrapped uint16_t capture_pos)
         let begin = (self.begin as usize + self.capture_pos as usize).min(line.len());
         let end = (begin + self.capture_len as usize).min(line.len());
         &line[begin..end]
@@ -2419,6 +2440,8 @@ impl<'a, 'c> ForwardHighlighterApplier<'a, 'c> {
 
         let region_lines = self.region_display.lines_mut();
         for (i, &(line_it, idx)) in insert_pos.iter().enumerate() {
+            // [DEVIATION] the C++ indexes region_lines out of range if the
+            // highlighter changed the region line count
             if i >= region_lines.len() {
                 break;
             }
@@ -2480,7 +2503,7 @@ fn regions_desc() -> HighlighterDesc {
     }
 }
 
-// As the Highlighter trait does not support downcasting, we keep track of the
+// [DEVIATION] As the Highlighter trait does not support downcasting, we keep track of the
 // region(s) highlighters instances to implement the C++ dynamic_casts. The weak
 // references keep the allocations alive, so addresses are never reused while
 // registered.
@@ -3003,6 +3026,8 @@ impl Highlighter for RegionsHighlighter {
 
         let display_range = display_buffer.range();
         let buffer = context.context.buffer();
+        // [DEVIATION] a shared copy of the cached regions: the C++ keeps a reference
+        // into the cache, which a reentrant use (through ref) can invalidate
         let regions = self.get_regions_for_range(&buffer, range)?;
 
         let begin = regions.partition_point(|r| r.end < display_range.begin);

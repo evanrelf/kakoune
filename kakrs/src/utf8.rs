@@ -22,8 +22,8 @@ pub fn is_character_start(c: u8) -> bool {
 
 #[inline]
 fn read_multibyte<F: FnMut() -> Option<u8>>(byte: u8, mut next: F) -> Codepoint {
-    // C++ passes the lead byte as a (signed) char to the invalid policy, so
-    // invalid bytes are sign extended.
+    // [FAITHFUL] C++ passes the lead byte as a (signed) char to the invalid
+    // policy, so invalid bytes are sign extended (0x80 -> 0xFFFFFF80).
     let invalid = byte as i8 as Codepoint;
     let byte = byte as u32;
     if (byte & 0xE0) == 0xC0 {
@@ -153,12 +153,13 @@ pub fn previous(s: &[u8], mut pos: usize, begin: usize) -> usize {
 
 /// advance by d characters (may be negative)
 pub fn advance(s: &[u8], mut pos: usize, mut d: CharCount) -> usize {
+    // [FAITHFUL] advancing from the end returns the end, even backward
     if pos == s.len() {
         return pos;
     }
     if d < 0 {
-        // Note: the C++ code uses `end` as the begin sentinel here, which
-        // means it can go back to the start of the string.
+        // [DEVIATION] the C++ code uses `end` as the begin sentinel here, so
+        // it walks before the start of the string (UB): stop at 0 instead.
         while d != 0 {
             d += 1;
             pos = previous(s, pos, 0);
@@ -177,10 +178,13 @@ pub fn advance(s: &[u8], mut pos: usize, mut d: CharCount) -> usize {
 
 /// advance by d columns (may be negative)
 pub fn advance_columns(s: &[u8], mut pos: usize, mut d: ColumnCount) -> usize {
+    // [FAITHFUL] advancing from the end returns the end, even backward
     if pos == s.len() {
         return pos;
     }
     if d < 0 {
+        // [DEVIATION] as in advance, C++ would walk before the start (UB),
+        // stop at 0 instead.
         while d < 0 {
             let cur = pos;
             pos = previous(s, pos, 0);
@@ -554,7 +558,8 @@ mod tests {
         s.char_indices().map(|(i, _)| i).chain(std::iter::once(s.len())).collect()
     }
 
-    /// C++ decodes invalid bytes through a (signed) char, sign extending them
+    /// [FAITHFUL] C++ decodes invalid bytes through a (signed) char, sign
+    /// extending them
     fn sign_extend(b: u8) -> Codepoint {
         b as i8 as i32 as u32
     }
@@ -731,7 +736,7 @@ mod tests {
         let d = tc.draw(gs::integers::<i32>().min_value(-(count as i32) - 2).max_value(count as i32 + 2));
         let res = advance(s.as_bytes(), b[i], d);
         if b[i] == s.len() {
-            // C++ quirk: advancing from the end returns the end, even backward
+            // [FAITHFUL] advancing from the end returns the end, even backward
             assert_eq!(res, s.len());
         } else {
             let target = (i as i64 + d as i64).clamp(0, count);

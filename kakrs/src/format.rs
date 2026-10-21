@@ -67,7 +67,8 @@ macro_rules! impl_format_param_int {
 }
 impl_format_param_int!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
 
-/// C++ has no to_string(bool): a bool parameter goes through to_string(int)
+/// [FAITHFUL] C++ has no to_string(bool): a bool parameter goes through
+/// to_string(int) and prints as 1 or 0
 impl FormatParam for bool {
     fn format_param(&self) -> Cow<'_, [u8]> {
         Cow::Borrowed(if *self { b"1" } else { b"0" })
@@ -90,8 +91,9 @@ impl FormatParam for f64 {
 /// notation when the decimal exponent X satisfies -4 <= X < 6, scientific
 /// otherwise, exponent with a sign and at least two digits).
 ///
-/// Note: C++ only uses to_chars when __cpp_lib_to_chars is defined, it falls
-/// back on snprintf("%f") otherwise (e.g. with Apple's libc++).
+/// [DEVIATION] C++ only uses to_chars when __cpp_lib_to_chars is defined, it
+/// falls back on snprintf("%f") otherwise (e.g. with Apple's libc++, giving
+/// "0.100000"): the port always follows the to_chars path.
 fn to_string_float<F: std::fmt::LowerExp + Copy + Into<f64>>(v: F) -> String {
     let f: f64 = v.into();
     if f.is_nan() {

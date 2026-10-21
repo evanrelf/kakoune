@@ -38,6 +38,8 @@ pub fn substr_chars(s: &[u8], from: i32, length: i32) -> &[u8] {
 
 /// StringView::substr(ByteCount from, ByteCount length = -1)
 pub fn substr(s: &[u8], from: usize, length: isize) -> &[u8] {
+    // [DEVIATION] C++ asserts from <= length (out of range access otherwise),
+    // clamp instead
     let from = from.min(s.len());
     let max_length = s.len() - from;
     let len = if length >= 0 && (length as usize) < max_length { length as usize } else { max_length };
@@ -76,8 +78,8 @@ pub fn trim_indent(s: &[u8]) -> Result<Vec<u8>> {
         s = &s[1..];
     }
     while let Some(&last) = s.last() {
-        // C++ converts the (signed) char to a Codepoint, so bytes >= 0x80
-        // (such as the 0xA0 ending "à") are never blanks.
+        // [FAITHFUL] C++ converts the (signed) char to a Codepoint, so bytes
+        // >= 0x80 (such as the 0xA0 ending "à") are never blanks.
         if is_blank(last as i8 as i32 as Codepoint) {
             s = &s[..s.len() - 1];
         } else {
@@ -151,6 +153,8 @@ pub fn indent(s: &[u8], indent: &[u8]) -> Vec<u8> {
     res
 }
 
+/// [FAITHFUL] an empty substr loops forever with a non empty s, as in C++
+/// (std::search of an empty needle matches at the current position).
 pub fn replace(s: &[u8], substr: &[u8], replacement: &[u8]) -> Vec<u8> {
     let mut res = Vec::new();
     let mut it = 0;
@@ -176,6 +180,8 @@ pub fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// [DEVIATION] `size - column_length` overflows for sizes near i32::MIN: UB
+/// in C++, a panic in debug builds here (same in right_pad)
 pub fn left_pad(s: &[u8], size: ColumnCount, c: Codepoint) -> Vec<u8> {
     let mut res = string_of_cp_cols(c, (size - column_length(s)).max(0));
     res.extend_from_slice(substr_columns(s, 0, size));
@@ -189,6 +195,9 @@ pub fn right_pad(s: &[u8], size: ColumnCount, c: Codepoint) -> Vec<u8> {
 }
 
 /// join(container, char joiner, bool esc_joiner)
+///
+/// [FAITHFUL] the joiner is only added once the result is non empty, so
+/// leading empty elements vanish (join(["", "a"]) == "a").
 pub fn join<I, S>(container: I, joiner: u8, esc_joiner: bool) -> Vec<u8>
 where
     I: IntoIterator<Item = S>,
@@ -210,6 +219,8 @@ where
 }
 
 /// join(container, StringView joiner)
+///
+/// [FAITHFUL] leading empty elements vanish, as in join.
 pub fn join_str<I, S>(container: I, joiner: &[u8]) -> Vec<u8>
 where
     I: IntoIterator<Item = S>,
@@ -252,6 +263,7 @@ pub fn expand_tabs(line: &[u8], tabstop: ColumnCount, mut col: ColumnCount) -> V
     let mut it = 0;
     while it < line.len() {
         if line[it] == b'\t' {
+            // [DEVIATION] a zero tabstop divides by zero: UB in C++, a panic here
             let end_col = (col / tabstop + 1) * tabstop;
             res.extend(std::iter::repeat_n(b' ', (end_col - col) as usize));
             col = end_col;
@@ -358,6 +370,8 @@ pub fn split_escaped(s: &[u8], separator: u8, escaper: Option<u8>) -> Vec<&[u8]>
             break;
         }
         pos = sep + 1;
+        // [FAITHFUL] when the separator is the escaper, it escapes the
+        // character following it (C++ ranges.hh SplitView::advance)
         let mut escaped = escaper.is_some() && Some(s[sep]) == escaper;
         sep = pos;
         while sep != end {
@@ -511,8 +525,8 @@ mod tests {
         assert_eq!(unescape(&s, &chars, esc), s);
     }
 
-    /// C++ quirk of join(): the joiner is only added once the result is non
-    /// empty, so leading empty elements vanish.
+    /// [FAITHFUL] join() only adds the joiner once the result is non empty,
+    /// so leading empty elements vanish.
     fn skip_leading_empty(parts: &[Vec<u8>]) -> &[Vec<u8>] {
         let first = parts.iter().position(|p| !p.is_empty()).unwrap_or(parts.len());
         &parts[first..]
@@ -539,7 +553,7 @@ mod tests {
         let joined = join(&parts, sep, true);
         let split: Vec<Vec<u8>> =
             split_escaped(&joined, sep, Some(b'\\')).into_iter().map(|p| unescape(p, &[sep, b'\\'], b'\\')).collect();
-        // leading empty elements are lost by join (faithful C++ quirk)
+        // [FAITHFUL] leading empty elements are lost by join
         assert_eq!(split, skip_leading_empty(&parts));
     }
 
@@ -561,7 +575,7 @@ mod tests {
 
     // A separator splits iff it is not escaped. When the separator is the
     // escaper itself, a separator also escapes the following character
-    // (C++ ranges.hh SplitView quirk), which this model reproduces.
+    // ([FAITHFUL] C++ ranges.hh SplitView quirk), which this model reproduces.
     #[hegel::test(test_cases = 1000)]
     fn split_escaped_splits_on_unescaped_separators_only(tc: TestCase) {
         let s = tc.draw(special_bytes());
@@ -603,7 +617,7 @@ mod tests {
     fn replace_matches_bstr(tc: TestCase) {
         use bstr::ByteSlice;
         let s = tc.draw(special_bytes());
-        // An empty pattern makes the C++ loop forever, it is a precondition.
+        // [FAITHFUL] an empty pattern makes replace loop forever, as in C++
         let pattern = tc.draw(gs::vecs(gs::sampled_from(b"ab:'".to_vec())).min_size(1).max_size(3));
         let replacement = tc.draw(special_bytes());
         assert_eq!(replace(&s, &pattern, &replacement), s.replace(&pattern, &replacement));
@@ -751,7 +765,8 @@ mod tests {
     fn trim_indent_removes_common_indent(tc: TestCase) {
         let lines = tc.draw(gs::vecs(line_text()).min_size(1).max_size(5));
         let ind = tc.draw(indentation());
-        // trailing blanks are trimmed byte per byte, so only ascii ones
+        // [FAITHFUL] trailing blanks are trimmed byte per byte (signed char),
+        // so only ascii ones
         let trailing = tc.draw(gs::optional(gs::text().alphabet(" \t\n")));
         let mut text = b"\n".to_vec();
         text.extend(join_str(lines.iter().map(|l| [&ind[..], l.as_bytes()].concat()), b"\n"));
@@ -775,7 +790,7 @@ mod tests {
     fn expand_tabs_reaches_tab_stops(tc: TestCase) {
         let line = tc.draw(bytes_over(b"ab \t"));
         let line: Vec<u8> = line.into_iter().filter(|c| c.is_ascii_graphic() || *c == b' ' || *c == b'\t').collect();
-        // tabstop 0 divides by zero in C++ too; starting columns are never
+        // [DEVIATION] tabstop 0 divides by zero (UB in C++, a panic here); starting columns are never
         // negative in Kakoune (C++ integer division would round towards 0)
         let tabstop = tc.draw(gs::integers::<i32>().min_value(1).max_value(16));
         let col = tc.draw(gs::integers::<i32>().min_value(0).max_value(100));
@@ -832,8 +847,9 @@ mod tests {
     }
 
     // A negative size means no truncation (substr with a negative length).
-    // Sizes close to i32::MIN make `size - column_length` overflow, which is
-    // UB in C++ too (it would wrap to a huge padding), so they are excluded.
+    // [DEVIATION] Sizes close to i32::MIN make `size - column_length`
+    // overflow, UB in C++ (it would wrap to a huge padding) and a panic in
+    // debug builds here, so they are excluded.
     #[hegel::test(test_cases = 1000)]
     fn pad_with_negative_size_is_identity(tc: TestCase) {
         let s = tc.draw(valid_text());

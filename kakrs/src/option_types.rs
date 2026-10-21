@@ -129,6 +129,7 @@ impl OptionElem for i32 {
 impl OptionAdd for i32 {
     fn option_add(&mut self, s: &[u8]) -> Result<bool> {
         let val = str_to_int(s)?;
+        // [DEVIATION] signed overflow is UB in C++, wrap here
         *self = self.wrapping_add(val);
         Ok(val != 0)
     }
@@ -319,6 +320,9 @@ impl<T: OptionElem> OptionType for Vec<T> {
 
 pub type StringMap = IndexMap<Vec<u8>, Vec<u8>>;
 
+// [FAITHFUL] keys and values only escape '=' when printed, but parsing
+// unescapes both '=' and '\\', so backslashes do not round trip (as in C++
+// option_types.hh, escape(str, '=', '\\') vs unescape<'=', '\\'>)
 impl OptionType for StringMap {
     fn type_name() -> Vec<u8> {
         b"str-to-str-map".to_vec()
@@ -374,6 +378,8 @@ fn split_key_value(s: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
 
 pub const TUPLE_SEPARATOR: u8 = b'|';
 
+/// [FAITHFUL] join drops leading empty elements, so a tuple whose first
+/// element is empty does not parse back
 pub fn tuple_to_string(quoting: Quoting, elems: &[Vec<u8>]) -> Vec<u8> {
     quoter(quoting)(&join(elems, TUPLE_SEPARATOR, true))
 }
@@ -744,7 +750,7 @@ mod tests {
 
     // C++ escapes only '=' in keys and values (escape(str, '=', '\\')) but
     // unescapes both '=' and '\\' when parsing, so backslashes do not round
-    // trip (faithful C++ quirk): they are excluded here.
+    // trip ([FAITHFUL] C++ quirk): they are excluded here.
     #[hegel::test(test_cases = 1000)]
     fn str_map_roundtrip_without_backslashes(tc: TestCase) {
         let m = tc.draw(string_map(no_backslash(), no_backslash()));
@@ -796,7 +802,7 @@ mod tests {
 
     // join() drops leading empty elements (the joiner is only added once the
     // result is non empty), so a candidate with an empty first element does
-    // not round trip (faithful C++ quirk): the first element is non empty here.
+    // not round trip ([FAITHFUL] C++ quirk): the first element is non empty here.
     #[hegel::test(test_cases = 1000)]
     fn completion_candidate_roundtrip(tc: TestCase) {
         let c: CompletionCandidate =

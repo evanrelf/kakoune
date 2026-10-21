@@ -82,8 +82,8 @@ fn skip_while_reverse<I: SkipIt>(it: &mut I, begin: &I, condition: impl Fn(I::Va
     condition(it.value())
 }
 
-/// C++ char to Codepoint conversion: char is signed, so bytes >= 0x80
-/// become huge codepoints that match no character class.
+// [FAITHFUL] C++ char to Codepoint conversion: char is signed, so bytes
+// >= 0x80 become huge codepoints that match no character class.
 #[inline]
 fn char_cp(c: u8) -> Codepoint {
     c as i8 as Codepoint
@@ -379,6 +379,7 @@ fn find_opening<I: ByteIt>(
     mut level: i32,
     nestable: bool,
 ) -> Result<Option<(I, I)>> {
+    // [DEVIATION] urgent event errors abort the search and are returned by check()
     let mut idle = UrgentEventsIdle::default();
     let mut res = MatchResults::default();
     // When on the token of a non-nestable block, we want to consider it opening
@@ -448,6 +449,7 @@ fn find_closing<I: ByteIt>(
     mut level: i32,
     nestable: bool,
 ) -> Result<Option<(I, I)>> {
+    // [DEVIATION] urgent event errors abort the search and are returned by check()
     let mut idle = UrgentEventsIdle::default();
     let mut idle_func = || idle.idle();
     let mut matches = RegexIterator::<I, ForwardSearch>::new(
@@ -489,8 +491,8 @@ fn find_closing<I: ByteIt>(
     Ok(None)
 }
 
-/// std::next, which would go past the end in the C++ code if it was
-/// already at the end (undefined behaviour), we stay at end instead.
+// [DEVIATION] std::next, which would go past the end in the C++ code if it
+// was already at the end (undefined behaviour), we stay at end instead.
 fn next_byte<I: ByteIt>(it: &I, end: &I) -> I {
     let mut it = it.clone();
     if &it != end {
@@ -523,6 +525,7 @@ fn find_surrounding<I: ByteIt>(
             level = 0;
         }
     } else {
+        // [DEVIATION] urgent event errors abort the search and are returned by check()
         let mut idle = UrgentEventsIdle::default();
         let mut res = MatchResults::default();
         let found = regex_search_captures(
@@ -1006,8 +1009,8 @@ pub fn select_argument(context: &Context, selection: &Selection, level: i32, fla
     }
 
     if flags.has(ObjectFlags::Inner) {
-        // The C++ decrements unconditionally, which is undefined behaviour
-        // when end is at the buffer begin
+        // [DEVIATION] The C++ decrements unconditionally, which is undefined
+        // behaviour when end is at the buffer begin
         if !last_arg && end != buf_begin {
             end.step_back();
         }
@@ -1072,6 +1075,8 @@ pub fn select_nested_words(
         let make = |it| Utf8Iter::new(it, buffer_begin(lines), buffer_end(lines));
         let end = make(end);
         let mut it = make(beg);
+        // [FAITHFUL] hangs when the selection ends inside an invalid utf-8
+        // sequence, as codepoint iteration then jumps over end
         while it != end {
             if !skip_while(&mut it, &end, is_not_word) {
                 break;
@@ -1238,6 +1243,7 @@ pub fn regex_select_nested(
     for_each_sel(context, |res, beg, end| {
         let lines = beg.lines();
         let (buf_begin, buf_end) = (buffer_begin(lines), buffer_end(lines));
+        // [DEVIATION] urgent event errors abort the search and are returned by check()
         let (mut opening_urgent, mut closing_urgent) = (UrgentEventsIdle::default(), UrgentEventsIdle::default());
         let (mut opening_idle, mut closing_idle) = (|| opening_urgent.idle(), || closing_urgent.idle());
         let mut opening_matches = RegexIterator::<BufferIterator, ForwardSearch>::new(
@@ -1263,6 +1269,8 @@ pub fn regex_select_nested(
 
         let mut start: Option<BufferIterator> = None;
         let mut level = -count - 1;
+        // [FAITHFUL] hangs when an opening and a closing match start at the
+        // same position, as neither inner loop advances then
         while opening_it.is_some() && closing_it.is_some() {
             while let Some(op) = &opening_it
                 && closing_it.as_ref().is_none_or(|cl| op.0 < cl.0)
@@ -1290,7 +1298,8 @@ pub fn regex_select_nested(
                 closing_it = closing_matches.next_match().map(main_capture);
             }
         }
-        // An urgent event error interrupts the searches, which end the loops
+        // [DEVIATION] An urgent event error interrupts the searches, which end
+        // the loops, and is returned here (the C++ unwinds with an exception)
         opening_urgent.check()?;
         closing_urgent.check()?;
         if let Some(s) = start {
@@ -1312,6 +1321,7 @@ pub fn regex_select_nested_delimiter(
     for_each_sel(context, |res, beg, end| {
         let lines = beg.lines();
         let mut start: Option<BufferIterator> = None;
+        // [DEVIATION] urgent event errors abort the search and are returned by check()
         let mut urgent = UrgentEventsIdle::default();
         let mut idle_func = || urgent.idle();
         let mut matches = RegexIterator::<BufferIterator, ForwardSearch>::new(
@@ -1401,6 +1411,7 @@ fn find_next<'a>(
     wrapped: &mut bool,
 ) -> Result<bool> {
     let (begin, end) = (buffer_begin(lines), buffer_end(lines));
+    // [DEVIATION] urgent event errors abort the search and are returned by check()
     let mut idle = UrgentEventsIdle::default();
     if pos != end {
         let found =
@@ -1430,6 +1441,7 @@ fn find_prev<'a>(
     wrapped: &mut bool,
 ) -> Result<bool> {
     let (begin, end) = (buffer_begin(lines), buffer_end(lines));
+    // [DEVIATION] urgent event errors abort the search and are returned by check()
     let mut idle = UrgentEventsIdle::default();
     if pos != begin {
         let found = backward_regex_search(
@@ -1527,6 +1539,7 @@ pub fn select_matches(
         let sel_beg = BufferIterator::new(&lines, sel.min());
         let sel_end = it_next(&BufferIterator::new(&lines, sel.max()), &buf_end);
 
+        // [DEVIATION] urgent event errors abort the search and are returned by check()
         let mut urgent = UrgentEventsIdle::default();
         let mut idle_func = || urgent.idle();
         let mut matches =
@@ -1559,6 +1572,7 @@ pub fn select_matches(
         return Err(Error::runtime("nothing selected"));
     }
 
+    // [DEVIATION] stable sort, std::sort leaves the order of equal selections unspecified
     result.sort_by(|lhs, rhs| {
         if compare_selections(lhs, rhs) {
             std::cmp::Ordering::Less
@@ -1595,8 +1609,8 @@ pub fn split_on_matches(
             RegexIterator::with_vm_range(begin, sel_end, &mut vm, buffer_match_flags(buffer, &begin, &sel_end));
         while let Some(m) = matches.next_match() {
             let capture = &m[capture_idx as usize];
-            // A non participating capture has default constructed iterators
-            // in the C++ code, which leads to undefined behaviour, skip it.
+            // [DEVIATION] A non participating capture has default constructed
+            // iterators in the C++ code, which leads to undefined behaviour, skip it.
             let (Some(end), Some(capture_end)) = (capture.first, capture.second) else { continue };
             if end == buf_end {
                 continue;

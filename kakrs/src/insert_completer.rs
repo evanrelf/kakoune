@@ -762,9 +762,10 @@ impl InsertCompleterImpl {
             for _ in 0..suffix_len {
                 record_key(Key::new(named::DELETE));
             }
-            // C++ records one (sign extended) key per byte, see PORTING.md
-            for c in utf8::codepoints(&candidate.completion) {
-                record_key(Key::new(c));
+            // [FAITHFUL] one key per byte, as a sign extended char, see
+            // UPSTREAM-QUIRKS.md
+            for &c in candidate.completion.iter() {
+                record_key(Key::new(c as i8 as Codepoint));
             }
         }
 

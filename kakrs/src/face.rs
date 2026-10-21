@@ -270,7 +270,8 @@ pub struct FaceSpec {
     pub base: Vec<u8>,
 }
 
-/// Mimic C++ `is_word(char)` where char is signed (non-ascii bytes are never words)
+/// [FAITHFUL] Mimic C++ `is_word(char)` where char is signed (non-ascii bytes
+/// are never words)
 fn is_word_char(c: u8) -> bool {
     c < 0x80 && is_word_default(c as u32)
 }
@@ -299,7 +300,7 @@ pub fn parse_face(facedesc: &[u8]) -> Result<FaceSpec> {
     if underline_it != end && underline_it > colors_end {
         return Err(Error::runtime(INVALID_FACE_ERROR));
     }
-    // A base before the background (e.g. "@a,b") makes C++ build a reversed
+    // [DEVIATION] A base before the background (e.g. "@a,b") makes C++ build a reversed
     // StringView for the background color, which is undefined behaviour
     // (it crashes), report the description as invalid instead.
     if bg_it != end && colors_end <= bg_it {
@@ -322,7 +323,7 @@ pub fn parse_face(facedesc: &[u8]) -> Result<FaceSpec> {
     if attr_it != end {
         attr_it += 1;
         while attr_it != base_it {
-            // With a base before the attributes (e.g. "red@a+b") C++ reads
+            // [DEVIATION] With a base before the attributes (e.g. "red@a+b") C++ reads
             // past the end of the description, finding the terminating nul
             // of the String in practice: report it as an invalid attribute.
             let c = if attr_it < end { facedesc[attr_it] } else { 0 };
@@ -527,6 +528,9 @@ impl FaceRegistry {
                 return Ok(());
             }
         }
+        // [FAITHFUL] this loops forever if the chain reaches a face based on
+        // itself (e.g. after add_face("X", "red@X") with no prior X, then
+        // add_face("Y", "@X")), as in C++
         let mut it = faces.get(&spec.base);
         while let Some(v) = it {
             if v.base.is_empty() {
@@ -718,7 +722,7 @@ mod tests {
         )
     }
 
-    // C++ has undefined behaviour (crashes, or reads past the end) when '@'
+    // [DEVIATION] C++ has undefined behaviour (crashes, or reads past the end) when '@'
     // comes before ',' or '+', the port must report an error, not panic.
     #[hegel::test(test_cases = 1000)]
     fn parse_face_never_panics(tc: TestCase) {

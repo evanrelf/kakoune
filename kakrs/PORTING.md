@@ -24,19 +24,28 @@ against the Rust binary.
 - Kakoune's insertion-ordered `HashMap` is `indexmap::IndexMap`
   (`remove` -> `shift_remove`, `erase`/`unordered_remove` -> `swap_remove`).
 
+## Comment tags
+
+Two greppable tags mark where the port's behaviour was a deliberate choice
+(`grep -rn '\[FAITHFUL\]\|\[DEVIATION\]' src`):
+
+- `// [FAITHFUL]`: the code copies questionable C++ behaviour on purpose
+  (a hang, a bug, a quirk such as decoding bytes through a signed `char`).
+  Each one has an entry in `UPSTREAM-QUIRKS.md`.
+- `// [DEVIATION]`: the code deliberately behaves differently from the C++,
+  usually because the C++ is undefined behaviour there.
+
+Ordinary porting notes ("C++ name", "as in the C++") are not tagged. Tests
+narrowed because of a faithful quirk use `[FAITHFUL]` too.
+
 ## Deliberate deviations from the C++
 
-- `EventManager::handle_next_events`: a pending forced fd makes the next
-  wait non blocking. The C++ resets the timeout (blocking until another fd is
-  ready), which regressed in 9358c62bf "Take a timeout argument in
-  EventManager::handle_next_events" where it replaced `block = false`.
+Questionable but well defined C++ behaviour (hangs, bugs) is copied as is and
+listed in `UPSTREAM-QUIRKS.md`. The port only deviates where it has to:
+
 - Undefined behaviour in the C++ (out of range accesses, more than 32
   regex captures in the valid capture mask...) is replaced by well defined
   behaviour, see the comments at the relevant places.
-- `InsertCompleter::select` records the inserted completion one key per
-  codepoint. The C++ records one key per byte (`for (auto& c : completion)
-  record_key(c)`, with sign extended chars), so repeating an insertion of a
-  non ascii completion with `.` inserts nothing for those characters.
 - Regex searches abort when handling urgent events fails (e.g. `<c-g>`
   cancel): the idle callback returns `ControlFlow::Break` and the error is
   returned through `UrgentEventsIdle::check`, where the C++ unwinds through

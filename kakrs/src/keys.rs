@@ -107,6 +107,8 @@ impl Key {
         DisplayCoord::new(((self.key & 0xFFFF0000) as i32) >> 16, (self.key & 0x0000FFFF) as i32)
     }
     pub fn mouse_button(&self) -> MouseButton {
+        // [DEVIATION] a mask value of 3 is not a valid C++ MouseButton
+        // (to_string asserts then throws logic_error), it maps to Right here
         match (self.modifiers.0 & Modifiers::MouseButtonMask.0) >> 6 {
             0 => MouseButton::Left,
             1 => MouseButton::Middle,
@@ -166,6 +168,8 @@ fn key_parse_error(msg: Vec<u8>) -> Error {
 
 fn canonicalize_ifn(mut key: Key) -> Result<Key> {
     if key.key > 0 && key.key < 27 {
+        // [FAITHFUL] the modifiers are replaced, not extended (C++ only
+        // asserts they are None), so "<s-\x1a>" or "<a-\x01>" lose them
         key.modifiers = Modifiers::Control;
         key.key = key.key - 1 + 'a' as u32;
     }
@@ -233,8 +237,9 @@ pub fn parse_keys(s: &[u8]) -> Result<KeyList> {
             it = utf8::next(s, it);
             continue;
         }
-        // find '>' codepoint (as C++ std::find on a utf8 iterator, which
-        // compares decoded codepoints: an invalid "\xC0>" decodes to '>')
+        // find '>' codepoint ([FAITHFUL] as C++ std::find on a utf8
+        // iterator, which compares decoded codepoints: an invalid "\xC0>"
+        // decodes to '>')
         let mut end_it = it;
         while end_it < end && utf8::codepoint_at(s, end_it) != '>' as u32 {
             end_it = utf8::next(s, end_it);
@@ -262,6 +267,9 @@ pub fn parse_keys(s: &[u8]) -> Result<KeyList> {
         if let Some((_, k)) = KEY_NAME_MAP.iter().find(|(name, _)| name.as_bytes() == desc) {
             result.push(canonicalize_ifn(Key::with_mod(modifier, *k))?);
         } else if char_length(desc) == 1 {
+            // [FAITHFUL] raw characters are not converted to named keys here,
+            // so "< >" and "<\x1b>" give keys that print back as " " and
+            // "\x1b", which then parse as <space> and <esc>
             result.push(canonicalize_ifn(Key::with_mod(modifier, utf8::codepoint(desc)))?);
         } else if !desc.is_empty() && desc[0] == b'F' && desc.len() <= 3 {
             let val = str_to_int(&desc[1..])?;
@@ -459,7 +467,7 @@ mod tests {
     // Printing the keys parsed from a string and parsing them again gives the
     // same keys back, except that "< >" and "<\x1b>" parse to raw space and
     // escape keys, which print unbracketed and so re-parse as <space> and
-    // <esc> (faithful C++ behaviour).
+    // <esc> ([FAITHFUL] C++ behaviour).
     #[hegel::test(test_cases = 1000)]
     fn key_to_str_parse_is_idempotent(tc: TestCase) {
         let s = tc.draw(key_text());
@@ -530,7 +538,7 @@ mod tests {
 
     // Control codes 1..=26 are excluded: canonicalize_ifn turns them into
     // <c-a>..<c-z> *replacing* the modifiers before checking shift, so
-    // "<s-\x1a>" is <c-z> (faithful C++ behaviour, it asserts no modifiers
+    // "<s-\x1a>" is <c-z> ([FAITHFUL] C++ behaviour, it asserts no modifiers
     // in debug builds).
     #[hegel::test(test_cases = 1000)]
     fn shift_only_applies_to_letters_and_special_keys(tc: TestCase) {

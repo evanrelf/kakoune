@@ -112,6 +112,8 @@ pub enum CharCategories {
     Punctuation,
 }
 
+/// [FAITHFUL] '\r' and '\v' are blanks (is_blank) but neither end of lines
+/// nor horizontal blanks, so they categorize as Punctuation (or Word for WORD)
 #[inline]
 pub fn categorize(word_type: WordType, c: Codepoint, extra_word_chars: &[Codepoint]) -> CharCategories {
     if is_eol(c) {
@@ -311,7 +313,7 @@ mod tests {
         if !is_eol(c) && !is_horizontal_blank(c) {
             assert_eq!(cat == CharCategories::Word, is_word_default(c));
         }
-        // C++ quirk: '\r' and '\v' are blanks for is_punctuation but neither
+        // [FAITHFUL] '\r' and '\v' are blanks for is_punctuation but neither
         // eol nor horizontal blanks for categorize, so they categorize as
         // Punctuation.
         if cat == CharCategories::Punctuation {

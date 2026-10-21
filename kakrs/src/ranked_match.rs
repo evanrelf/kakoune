@@ -264,7 +264,8 @@ impl<'a> RankedMatch<'a> {
             }
         }
 
-        // std::search with smartcase_eq applied bytewise (as in the C++ code)
+        // [FAITHFUL] std::search with smartcase_eq applied bytewise, each
+        // (signed) char converted to a codepoint, as in the C++ code
         let found = (0..=candidate.len() - query.len())
             .find(|&start| (0..query.len()).all(|i| smartcase_eq(candidate[start + i] as i8 as i32 as u32, query[i] as i8 as i32 as u32)));
         if let Some(pos) = found {
@@ -285,6 +286,7 @@ impl<'a> RankedMatch<'a> {
 
         m.full_word_match_count = count_full_word_match(candidate, query);
         m.word_boundary_match_count = count_word_boundaries_match(candidate, query);
+        // [FAITHFUL] compares a codepoint count with the query byte length
         if m.word_boundary_match_count as usize == query.len() {
             m.flags |= MatchFlags::OnlyWordBoundary;
         }
@@ -342,7 +344,10 @@ impl<'a> RankedMatch<'a> {
         if self.input_sequence_number != other.input_sequence_number {
             return self.input_sequence_number < other.input_sequence_number;
         }
-        // Reorder codepoints to improve matching behaviour
+        // Reorder codepoints to improve matching behaviour.
+        // [FAITHFUL] '/' and NUL both order as 0, and invalid utf8 decodes
+        // depending on the following bytes: either breaks the strict weak
+        // ordering ("\0" ~ "/" ~ "\0a" but "\0" < "\0a").
         let order = |cp: Codepoint| if cp == '/' as u32 { 0 } else { cp };
         let s1 = self.candidate;
         let s2 = other.candidate;
@@ -403,6 +408,9 @@ fn char_start_bounded(s: &[u8], mut pos: usize, begin: usize) -> usize {
 }
 
 /// Sort ranked matches with the C++ operator< ordering
+///
+/// [DEVIATION] operator< is not a strict weak ordering for candidates with NUL
+/// bytes or invalid utf8: std::sort is UB there, slice::sort_by may panic.
 pub fn sort_matches(matches: &mut [RankedMatch]) {
     matches.sort_by(|a, b| a.cmp(b));
 }
@@ -538,7 +546,7 @@ mod tests {
         hegel::one_of!(gs::text(), gs::text().alphabet("aAbB/_.-éÉ")).map(String::into_bytes)
     }
 
-    // Restricted to valid utf8: decoding invalid utf8 depends on the
+    // [FAITHFUL] Restricted to valid utf8: decoding invalid utf8 depends on the
     // following bytes (a lone "\xC0" decodes differently from "\xC0\x00"),
     // so with invalid text a prefix may fail to match (as in C++).
     #[hegel::test(test_cases = 1000)]
@@ -566,7 +574,7 @@ mod tests {
 
     // Beyond ascii, towlower may map a non ascii candidate char to an ascii
     // query letter (e.g. KELVIN SIGN to 'k') which the precheck does not
-    // know about (faithful C++ behaviour), so it can only reject more.
+    // know about ([FAITHFUL] C++ behaviour), so it can only reject more.
     #[hegel::test(test_cases = 1000)]
     fn letters_precheck_only_rejects(tc: TestCase) {
         init_test_locale();
@@ -584,9 +592,9 @@ mod tests {
     /// characters with filler. NUL bytes are excluded: C++ operator< orders
     /// '/' as codepoint 0, making it equivalent to NUL, which breaks the
     /// strict weak ordering ("\0" ~ "/" ~ "\0a" but "\0" < "\0a"). This is
-    /// faithful to the C++ code (checked against it), and only matters for
+    /// [FAITHFUL] to the C++ code (checked against it), and only matters for
     /// candidates containing NUL.
-    /// Candidates are also valid utf8: invalid sequences decode differently
+    /// [FAITHFUL] Candidates are also valid utf8: invalid sequences decode differently
     /// depending on the following bytes ("\xCB" vs "\xCB\x06" = U+02C6),
     /// which makes the C++ ordering intransitive too ("\x01" < "\xCB" <
     /// "\xCB\x06" < "\x01", checked against the C++ code).
