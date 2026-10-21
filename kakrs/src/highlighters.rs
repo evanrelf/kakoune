@@ -65,8 +65,10 @@ fn make_highlighter(
 }
 
 /// String{' ', count}
+/// C++ `String{' ', count}`
 fn spaces(count: ColumnCount) -> Vec<u8> {
-    vec![b' '; count.max(0) as usize]
+    // [FAITHFUL] negative counts are std::bad_alloc, see string_of_cp
+    crate::string_utils::string_of_cp_cols(' ' as Codepoint, count)
 }
 
 // [FAITHFUL] C++ converts a (signed) char to a Codepoint, non ascii bytes end

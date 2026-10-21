@@ -461,6 +461,12 @@ impl Buffer {
     }
 
     pub fn char_next(&self, coord: BufferCoord) -> BufferCoord {
+        // [DEVIATION] past the last line (e.g. the selection left by nested
+        // paragraphs, see UPSTREAM-QUIRKS.md) the C++ reads past the end of
+        // the line vector; give the result of its fallthrough instead
+        if coord.line >= self.line_count() {
+            return BufferCoord::new(coord.line + 1, 0);
+        }
         let line = self.line(coord.line);
         let len = line.len() as ByteCount;
         if coord.column < len - 1 {
@@ -946,12 +952,17 @@ impl Buffer {
     pub fn debug_description(&self) -> Vec<u8> {
         let c = self.content.borrow();
         let content_size: usize = c.lines.iter().map(|l| l.len()).sum();
+        // [FAITHFUL] sizeof of the C++ HistoryNode, Modification and Change
+        // (64 bit), so `debug buffers` reports the same numbers
+        const HISTORY_NODE_SIZE: usize = 48;
+        const MODIFICATION_SIZE: usize = 24;
+        const CHANGE_SIZE: usize = 20;
         let additional_size: usize = c
             .history
             .iter()
-            .map(|h| std::mem::size_of::<HistoryNode>() + h.undo_group.len() * std::mem::size_of::<Modification>())
+            .map(|h| HISTORY_NODE_SIZE + h.undo_group.len() * MODIFICATION_SIZE)
             .sum::<usize>()
-            + c.changes.len() * std::mem::size_of::<Change>();
+            + c.changes.len() * CHANGE_SIZE;
         let flags = self.flags();
         let file = if flags.has(BufferFlags::File) { kformat!("File ({}) ", self.filename()) } else { Vec::new() };
         drop(c);

@@ -29,11 +29,18 @@ BINARIES = {"cpp": os.path.join(REPO, "src", "kak"),
 RUNTIME = os.path.join(REPO, "share", "kak")
 CASE_TIMEOUT = 5.0
 
+# The only commands the editors can run: shell completion (`!<tab>`) can pick
+# any command on the PATH and the next case may run it, so the PATH is a
+# directory of links to these instead of the user's PATH.
+SAFE_COMMANDS = ["sh", "cat", "sort", "tr", "sed", "printf", "wc", "head", "tail", "awk", "true", "false",
+                 "echo", "grep", "cut", "basename", "dirname", "expr", "mktemp", "git", "env", "uniq", "rev", "fold",
+                 "find", "ls"]  # kakrc needs find and ls (autoload, colorschemes)
+
 INIT = r"""
 declare-option -hidden int fuzz_counter 0
 define-command -hidden fuzz-dump %{
     set-option -add global fuzz_counter 1
-    echo -to-file %{STATE} -quoting kakoune -- %val{selections_desc} %val{bufname} %val{buflist} %val{modified} %val{history_id} %val{timestamp} %val{selection_count} %reg{dquote} %reg{slash} %reg{arobase} %reg{a} %reg{caret} %reg{pipe} %opt{tabstop} %opt{indentwidth} %opt{filetype} %opt{eolformat} %val{window_range} %val{cursor_display_column}
+    echo -to-file %{STATE} -quoting kakoune -- %val{selections_desc} %val{bufname} %val{buflist} %val{modified} %val{history_id} %val{selection_count} %reg{dquote} %reg{slash} %reg{arobase} %reg{a} %reg{caret} %reg{pipe} %opt{tabstop} %opt{indentwidth} %opt{filetype} %opt{eolformat} %val{window_range} %val{cursor_display_column}
     evaluate-commands -draft %{ execute-keys '%' ; echo -to-file %{CONTENT} -- %val{selection} }
     echo -to-file %{FIFO} done
     echo -markup "{Information}fuzz %opt{fuzz_counter}"
@@ -47,7 +54,7 @@ set-option global fs_check_timeout 100000000
 class Kak:
     """A kak -ui json process driven over stdin, with a state dump fifo"""
 
-    def __init__(self, impl, workdir, files):
+    def __init__(self, impl, workdir, files, norc=False):
         self.impl = impl
         self.dir = workdir
         os.makedirs(os.path.join(workdir, "cfg"), exist_ok=True)
@@ -58,12 +65,21 @@ class Kak:
         self.state = os.path.join(workdir, "state")
         self.content = os.path.join(workdir, "content")
         os.mkfifo(self.fifo)
+        bindir = os.path.join(workdir, "bin")
+        os.makedirs(bindir)
+        for cmd in SAFE_COMMANDS:
+            target = shutil.which(cmd)
+            if target:
+                os.symlink(target, os.path.join(bindir, cmd))
         init = INIT.replace("%{STATE}", self.state).replace("%{CONTENT}", self.content).replace("%{FIFO}", self.fifo)
         # TMPDIR stays the default: session socket paths must stay short
         env = dict(os.environ, KAKOUNE_CONFIG_DIR=os.path.join(workdir, "cfg"), KAKOUNE_RUNTIME=RUNTIME,
-                   HOME=workdir, KAKOUNE_POSIX_SHELL="/bin/sh")
+                   HOME=workdir, KAKOUNE_POSIX_SHELL="/bin/sh", PATH=bindir)
         self.session = f"kf{os.getpid()}{impl}{random.randrange(1 << 30)}"
-        self.proc = subprocess.Popen([BINARIES[impl], "-ui", "json", "-s", self.session, "-e", init, "a.txt"],
+        # the user's config is never loaded (empty KAKOUNE_CONFIG_DIR); norc
+        # also skips the bundled kakrc (-n)
+        self.proc = subprocess.Popen([BINARIES[impl]] + (["-n"] if norc else []) +
+                                     ["-ui", "json", "-s", self.session, "-e", init, "a.txt"],
                                      cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, start_new_session=True)
         self.out = queue.Queue()
@@ -222,13 +238,15 @@ def compare(results):
     return "ui output differs"
 
 
-def execute(files, cases, stop_at_first=True):
+def execute(files, cases, norc=False):
     """Run cases in a fresh pair of processes. Returns (index of first mismatch or None, detail)"""
     tmp = tempfile.mkdtemp(prefix="kakfuzz")
     kaks = {}
     try:
         for impl in BINARIES:
-            kaks[impl] = Kak(impl, os.path.join(tmp, impl), files)
+            # same length directory names: paths end up in buffers (e.g. the ^
+            # register), and coordinates after them must not differ
+            kaks[impl] = Kak(impl, os.path.join(tmp, impl[0]), files, norc)
         for k in kaks.values():
             k.wait_startup()
             k.send({"jsonrpc": "2.0", "method": "resize", "params": [24, 80]})
@@ -260,8 +278,8 @@ def describe(i, case, results, kaks, diff="startup differs"):
     return d
 
 
-def mismatches(files, cases):
-    idx, detail = execute(files, cases)
+def mismatches(files, cases, norc=False):
+    idx, detail = execute(files, cases, norc)
     return idx is not None
 
 
@@ -283,19 +301,19 @@ def ddmin(items, test):
     return items
 
 
-def minimize(files, cases, upto):
+def minimize(files, cases, upto, norc=False):
     cases = cases[:upto + 1]
-    cases = ddmin(cases, lambda c: mismatches(files, c))
+    cases = ddmin(cases, lambda c: mismatches(files, c, norc))
     # then the keys of each key case
     for i in range(len(cases)):
         if isinstance(cases[i], list) and len(cases[i]) > 1:
             def test(keys, i=i):
                 trial = cases[:i] + [keys] + cases[i + 1:]
-                return mismatches(files, trial)
+                return mismatches(files, trial, norc)
             cases[i] = ddmin(cases[i], test)
     # and the initial file contents
     for name in list(files):
-        if files[name] and mismatches({**files, name: ""}, cases):
+        if files[name] and mismatches({**files, name: ""}, cases, norc):
             files = {**files, name: ""}
     return files, cases
 
@@ -303,15 +321,15 @@ def minimize(files, cases, upto):
 def minimize_finding(path):
     """Check that a finding reproduces in fresh processes, then minimize it in place"""
     finding = json.load(open(path))
-    files, cases = finding["files"], finding["cases"]
-    hits = sum(execute(files, cases)[0] is not None for _ in range(3))
+    files, cases, norc = finding["files"], finding["cases"], finding.get("norc", False)
+    hits = sum(execute(files, cases, norc)[0] is not None for _ in range(3))
     if hits == 0:
         return "does not reproduce (flaky)"
-    idx, _ = execute(files, cases)
+    idx, _ = execute(files, cases, norc)
     if idx is None or idx < 0:
         return f"reproduces {hits}/3 but not on the 4th run"
-    mfiles, mcases = minimize(files, cases, idx)
-    _, mdetail = execute(mfiles, mcases)
+    mfiles, mcases = minimize(files, cases, idx, norc)
+    _, mdetail = execute(mfiles, mcases, norc)
     finding.update(files=mfiles, cases=mcases, minimized_detail=mdetail, reproduced=f"{hits}/3")
     with open(path, "w") as f:
         json.dump(finding, f, indent=1, ensure_ascii=False)
@@ -321,17 +339,18 @@ def minimize_finding(path):
 def run(seed, ncases, outdir, do_minimize):
     r = random.Random(seed)
     swarm = gen.Swarm(r)
+    norc = r.random() < 0.3
     files = initial_files(r)
     cases = [swarm.case(r) for _ in range(ncases)]
     t0 = time.time()
-    idx, detail = execute(files, cases)
+    idx, detail = execute(files, cases, norc)
     elapsed = time.time() - t0
     if idx is None:
         return {"seed": seed, "swarm": swarm.enabled, "ok": True, "elapsed": elapsed, "note": detail}
-    finding = {"seed": seed, "swarm": swarm.enabled, "detail": detail}
+    finding = {"seed": seed, "swarm": swarm.enabled, "norc": norc, "detail": detail}
     if do_minimize and idx >= 0:
-        mfiles, mcases = minimize(files, cases, idx)
-        _, mdetail = execute(mfiles, mcases)
+        mfiles, mcases = minimize(files, cases, idx, norc)
+        _, mdetail = execute(mfiles, mcases, norc)
         finding.update(files=mfiles, cases=mcases, minimized_detail=mdetail)
     else:
         finding.update(files=files, cases=cases[:idx + 1])
@@ -362,7 +381,7 @@ def main():
 
     if args.replay:
         finding = json.load(open(args.replay))
-        idx, detail = execute(finding["files"], finding["cases"])
+        idx, detail = execute(finding["files"], finding["cases"], finding.get("norc", False))
         print(json.dumps({"index": idx, "detail": detail}, indent=1, ensure_ascii=False))
         return
 

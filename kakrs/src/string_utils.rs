@@ -276,7 +276,7 @@ pub fn expand_tabs(line: &[u8], tabstop: ColumnCount, mut col: ColumnCount) -> V
         if line[it] == b'\t' {
             // [DEVIATION] a zero tabstop divides by zero: UB in C++, a panic here
             let end_col = (div_or_zero(col, tabstop) + 1) * tabstop;
-            res.extend(std::iter::repeat_n(b' ', (end_col - col) as usize));
+            res.extend(string_of_cp_cols(' ' as Codepoint, end_col - col));
             col = end_col;
             it += 1;
         } else {

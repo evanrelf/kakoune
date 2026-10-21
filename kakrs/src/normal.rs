@@ -947,8 +947,10 @@ fn insert_output(context: &Context, params: NormalParams, mode: PasteMode) -> Re
             let mut selections = context.selections().clone();
             let old_main = selections.main_index();
 
+            let current = std::cell::Cell::new(old_main);
             let res = selections.for_each(
                 |index, sel| {
+                    current.set(index);
                     context.selections().set_main_index(index);
                     let (out, _) = ShellManager::instance().eval(
                         cmdline,
@@ -967,7 +969,10 @@ fn insert_output(context: &Context, params: NormalParams, mode: PasteMode) -> Re
                 },
                 mode == PasteMode::Append,
             );
-            selections.set_main_index(old_main);
+            // [FAITHFUL] the C++ works on the context selections and only
+            // restores the main index if no selection failed (e.g. the buffer
+            // is read only): an error leaves it on the failing selection
+            selections.set_main_index(if res.is_ok() { old_main } else { current.get() });
             *context.selections_write_only() = selections;
             res
         }),

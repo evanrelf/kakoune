@@ -124,8 +124,12 @@ impl SelectionHistory {
 
     fn begin_edition(&mut self) {
         if self.in_edition == 0 {
-            let mut sels = self.current_selections_mut().clone();
-            sels.update(true);
+            // C++ HistoryNode{selections(), id}: selections() updates the
+            // current node in place before it is copied, so end_edition
+            // compares against up to date selections
+            let current = self.current_selections_mut();
+            current.update(true);
+            let sels = current.clone();
             self.staging = Some(SelectionHistoryNode::new(sels, self.history_id));
         }
         self.in_edition += 1;
