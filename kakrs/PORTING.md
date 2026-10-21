@@ -58,3 +58,11 @@ listed in `UPSTREAM-QUIRKS.md`. The port only deviates where it has to:
   against the Rust binary (`PROFILE=release` for the release build).
 - `python3 tools/difffuzz.py <seed> <count>`: differential fuzzing of random
   normal mode key sequences against the C++ build (`../src/kak`).
+
+## Building with Nix
+
+`nix build` (from the repository root) builds the Rust `kak` with the
+runtime files (kakrc, rc, colors, doc) installed in `share/kak`, the layout
+of the C++ `make install`, so it runs without `KAKOUNE_RUNTIME`. `nix develop`
+gives a shell with the Rust toolchain. A bare `cargo build` binary still
+needs `KAKOUNE_RUNTIME=<repo>/share/kak`.
