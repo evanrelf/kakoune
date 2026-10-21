@@ -291,14 +291,6 @@ impl OptionManager {
         parent.register_watcher(me);
     }
 
-    /// Unregister from parent, to be called when the owner goes away
-    pub fn detach(&self) {
-        let me = self.self_weak.clone() as Weak<dyn OptionWatcher>;
-        if let Some(old) = self.parent.borrow().as_ref() {
-            old.unregister_watcher(&me);
-        }
-    }
-
     pub fn register_watcher(&self, watcher: Weak<dyn OptionWatcher>) {
         self.watchers.borrow_mut().push(watcher);
     }
@@ -409,6 +401,17 @@ impl OptionManager {
     }
 }
 
+impl Drop for OptionManager {
+    /// C++ ~OptionManager: stop watching the parent, so short lived scopes
+    /// (local scopes, contexts) do not leave dead watchers behind, which made
+    /// every global option change walk an ever growing list
+    fn drop(&mut self) {
+        if let Some(parent) = self.parent.get_mut().take() {
+            parent.unregister_watcher(&(self.self_weak.clone() as Weak<dyn OptionWatcher>));
+        }
+    }
+}
+
 impl OptionWatcher for OptionManager {
     fn on_option_changed(&self, option: &Opt) -> Result<()> {
         OptionManager::on_option_changed(self, option)
@@ -487,5 +490,24 @@ impl OptionsRegistry {
         let names: Vec<&[u8]> =
             descs.iter().filter(|d| !d.flags.has(OptionFlags::Hidden)).map(|d| d.name.as_slice()).collect();
         complete(prefix, cursor_pos, names)
+    }
+}
+
+#[cfg(test)]
+mod watcher_tests {
+    use super::*;
+
+    #[test]
+    fn dropped_children_stop_watching_their_parent() {
+        let root = OptionManager::new_root();
+        for _ in 0..1000 {
+            let child = OptionManager::new(&root);
+            let _grandchild = OptionManager::new(&child);
+        }
+        assert_eq!(root.watchers.borrow().len(), 0);
+        let kept = OptionManager::new(&root);
+        assert_eq!(root.watchers.borrow().len(), 1);
+        drop(kept);
+        assert_eq!(root.watchers.borrow().len(), 0);
     }
 }
