@@ -81,10 +81,11 @@ class Kak:
         self.proc = subprocess.Popen([BINARIES[impl]] + (["-n"] if norc else []) +
                                      ["-ui", "json", "-s", self.session, "-e", init, "a.txt"],
                                      cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, start_new_session=True)
+                                     stderr=subprocess.PIPE)
         self.out = queue.Queue()
         self.dumps = queue.Queue()
         self.stderr = b""
+        self.closed = False
         threading.Thread(target=self._read_stdout, daemon=True).start()
         threading.Thread(target=self._read_fifo, daemon=True).start()
         threading.Thread(target=self._read_stderr, daemon=True).start()
@@ -100,7 +101,7 @@ class Kak:
         self.stderr = self.proc.stderr.read()
 
     def _read_fifo(self):
-        while True:
+        while not self.closed:
             try:
                 with open(self.fifo, "rb") as f:
                     f.read()
@@ -167,11 +168,16 @@ class Kak:
 
     def normalize(self, data):
         data = data.replace(os.path.realpath(self.dir).encode(), b"WORK").replace(self.dir.encode(), b"WORK")
+        # paths drawn on screen can be split across atoms, hiding the full
+        # path from the replacement above: also replace the implementation
+        # specific part
+        data = re.sub(rb"(kakfuzz[A-Za-z0-9_]+)/[cr]\b", rb"\1/W", data)
         return data.replace(self.session.encode(), b"SESSION")
 
     def close(self):
+        self.closed = True
         try:
-            os.killpg(self.proc.pid, signal.SIGKILL)
+            self.proc.kill()
         except OSError:  # already gone
             pass
         self.proc.wait()
@@ -283,13 +289,16 @@ def mismatches(files, cases, norc=False):
     return idx is not None
 
 
-def ddmin(items, test):
-    """Delta debugging: a minimal sublist of items for which test still holds"""
+def ddmin(items, test, deadline=None):
+    """Delta debugging: a minimal sublist of items for which test still holds.
+    Past the deadline, returns the smallest sublist found so far."""
     n = 2
-    while len(items) >= 2:
+    while len(items) >= 2 and (deadline is None or time.time() < deadline):
         chunk = max(1, len(items) // n)
         reduced = False
         for start in range(0, len(items), chunk):
+            if deadline is not None and time.time() >= deadline:
+                break
             candidate = items[:start] + items[start + chunk:]
             if candidate and test(candidate):
                 items, n, reduced = candidate, max(n - 1, 2), True
@@ -301,24 +310,30 @@ def ddmin(items, test):
     return items
 
 
-def minimize(files, cases, upto, norc=False):
+MINIMIZE_BUDGET = 120.0
+
+
+def minimize(files, cases, upto, norc=False, budget=None):
+    deadline = time.time() + (budget or MINIMIZE_BUDGET)
     cases = cases[:upto + 1]
-    cases = ddmin(cases, lambda c: mismatches(files, c, norc))
+    cases = ddmin(cases, lambda c: mismatches(files, c, norc), deadline)
     # then the keys of each key case
     for i in range(len(cases)):
         if isinstance(cases[i], list) and len(cases[i]) > 1:
             def test(keys, i=i):
                 trial = cases[:i] + [keys] + cases[i + 1:]
                 return mismatches(files, trial, norc)
-            cases[i] = ddmin(cases[i], test)
+            cases[i] = ddmin(cases[i], test, deadline)
     # and the initial file contents
     for name in list(files):
+        if time.time() >= deadline:
+            break
         if files[name] and mismatches({**files, name: ""}, cases, norc):
             files = {**files, name: ""}
     return files, cases
 
 
-def minimize_finding(path):
+def minimize_finding(path, budget=None):
     """Check that a finding reproduces in fresh processes, then minimize it in place"""
     finding = json.load(open(path))
     files, cases, norc = finding["files"], finding["cases"], finding.get("norc", False)
@@ -328,7 +343,7 @@ def minimize_finding(path):
     idx, _ = execute(files, cases, norc)
     if idx is None or idx < 0:
         return f"reproduces {hits}/3 but not on the 4th run"
-    mfiles, mcases = minimize(files, cases, idx, norc)
+    mfiles, mcases = minimize(files, cases, idx, norc, budget)
     _, mdetail = execute(mfiles, mcases, norc)
     finding.update(files=mfiles, cases=mcases, minimized_detail=mdetail, reproduced=f"{hits}/3")
     with open(path, "w") as f:
@@ -336,7 +351,7 @@ def minimize_finding(path):
     return f"minimized to {len(mcases)} cases, {sum(len(c) if isinstance(c, list) else 1 for c in mcases)} keys (reproduced {hits}/3)"
 
 
-def run(seed, ncases, outdir, do_minimize):
+def run(seed, ncases, outdir, do_minimize, budget=None):
     r = random.Random(seed)
     swarm = gen.Swarm(r)
     norc = r.random() < 0.3
@@ -349,7 +364,7 @@ def run(seed, ncases, outdir, do_minimize):
         return {"seed": seed, "swarm": swarm.enabled, "ok": True, "elapsed": elapsed, "note": detail}
     finding = {"seed": seed, "swarm": swarm.enabled, "norc": norc, "detail": detail}
     if do_minimize and idx >= 0:
-        mfiles, mcases = minimize(files, cases, idx, norc)
+        mfiles, mcases = minimize(files, cases, idx, norc, budget)
         _, mdetail = execute(mfiles, mcases, norc)
         finding.update(files=mfiles, cases=mcases, minimized_detail=mdetail)
     else:
@@ -371,11 +386,27 @@ def main():
     ap.add_argument("--no-minimize", action="store_true")
     ap.add_argument("--replay")
     ap.add_argument("--minimize", nargs="+", metavar="FINDING", help="minimize existing findings (in parallel)")
+    ap.add_argument("--time-limit", type=float, default=600,
+                    help="hard limit in seconds: the tool and every editor it started are killed")
+    ap.add_argument("--minimize-budget", type=float, default=MINIMIZE_BUDGET,
+                    help="seconds of delta debugging per finding, keeping the best result so far")
     args = ap.parse_args()
+
+    # One process group for the tool, its workers and every kak (and their
+    # shell children), so the watchdog can kill all of them at once.
+    os.setpgrp()
+
+    def watchdog():
+        print(f"time limit of {args.time_limit:.0f}s reached, killing everything", flush=True)
+        os.killpg(0, signal.SIGKILL)
+    timer = threading.Timer(args.time_limit, watchdog)
+    timer.daemon = True
+    timer.start()
 
     if args.minimize:
         with ProcessPoolExecutor(args.jobs) as ex:
-            for path, res in zip(args.minimize, ex.map(minimize_finding, args.minimize)):
+            budgets = [args.minimize_budget] * len(args.minimize)
+            for path, res in zip(args.minimize, ex.map(minimize_finding, args.minimize, budgets)):
                 print(f"{path}: {res}", flush=True)
         return
 
@@ -390,7 +421,8 @@ def main():
     total_cases = 0
     t0 = time.time()
     with ProcessPoolExecutor(args.jobs) as ex:
-        futures = [ex.submit(run, args.seed + i, args.cases, args.out, not args.no_minimize) for i in range(args.runs)]
+        futures = [ex.submit(run, args.seed + i, args.cases, args.out, not args.no_minimize, args.minimize_budget)
+                   for i in range(args.runs)]
         for fut in as_completed(futures):
             res = fut.result()
             total_cases += args.cases

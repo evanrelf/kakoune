@@ -8,6 +8,14 @@ use crate::utf8;
 pub type KString = Vec<u8>;
 
 /// String(cp, count)
+/// C++ `StringView` ordering (`<=>`)
+// [FAITHFUL] it compares `char`s, signed on macOS (arm64 and x86_64) and
+// Linux x86_64: bytes >= 0x80 order before ascii (on Linux arm64, where char
+// is unsigned, the C++ orders like plain byte slices)
+pub fn cpp_str_cmp(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    a.iter().map(|&c| c as i8).cmp(b.iter().map(|&c| c as i8))
+}
+
 /// Panic payload standing for the C++ `std::bad_alloc`, which nothing
 /// catches before `main`; `kak_main::main` handles it like the C++ main
 pub struct BadAlloc;

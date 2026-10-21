@@ -35,9 +35,13 @@ handler that backs up modified buffers never runs.
 - **Nested paragraphs ending in blank lines** (`<a-I>p`/`<a-A>p`,
   `selectors::select_nested_paragraphs`): when the rest of a selection is
   only end of lines, the new selection starts at the buffer end coordinate,
-  past the last line. The next edit reads out of bounds: the C++ segfaults,
-  the port panics (both back up modified buffers and exit). Found by the
-  differential fuzzer, e.g. `,o)<esc>3%.<a-I>pc` on a two line buffer.
+  past the last line. Drawing it and the next edit read out of bounds in
+  the C++, which then segfaults or not depending on memory contents (e.g.
+  `<a-A>p` on an empty buffer crashes while drawing). The port draws it
+  (`Buffer::char_next` and `highlight_selections` tolerate the line, see
+  their `[DEVIATION]` comments) and panics on the next edit, backing up
+  modified buffers like the C++ crash handler. Found by the differential
+  fuzzers, e.g. `,o)<esc>3%.<a-I>pc` on a two line buffer.
 
 - **`tabstop` 0** (`set-option -remove global tabstop 8`): only `set`
   validates options, so `-add`/`-remove` can reach values the checker
@@ -101,6 +105,10 @@ handler that backs up modified buffers never runs.
   found by decoded codepoint, so an invalid `\xC0>` closes it.
 - **`split_escaped` with the separator as escaper**: a separator escapes the
   character after it.
+- **String ordering**: the C++ `StringView <=>` compares `char`s, signed on
+  macOS and x86 Linux, so bytes >= 0x80 sort before ASCII (line completion
+  lists `é...` and `😀...` lines first). Unsigned on Linux arm64.
+  `string_utils::cpp_str_cmp` follows the signed order.
 - **Format of bools**: a bool parameter prints as `1`/`0` (there is no
   `to_string(bool)`, it goes through `to_string(int)`).
 - **Invalid UTF-8 decoding**: invalid lead bytes decode sign extended
@@ -147,6 +155,11 @@ handler that backs up modified buffers never runs.
   then segfaults or produces negative coordinates (e.g. `1.1,-1.64`). The
   port stops at the buffer start. Found by the differential fuzzer with
   `fad<a-i>u` on a buffer starting with `   // "str"`.
+- **`<a-R>` with duplicated selections** (`paste_all` with
+  `PasteMode::Replace`, e.g. `+<a-R>`): the C++ replaces through overlapping
+  selections whose coordinates went stale after the first replacement and
+  segfaults. The port completes the replacements. Found by kakfuzz
+  (`<pagedown>oe`, `<a-b>d`, `+<a-R>` on an empty buffer).
 - **`+` / `+:` command line argument** (open at the end of the file):
   `main.cc` deduces `client_init` as a `StringView`, so
   `client_init = client_init + "; exec gj"` leaves it pointing to a freed

@@ -582,7 +582,7 @@ fn complete_line<const OTHER_BUFFERS: bool>(
     if candidates.is_empty() {
         return Ok(InsertCompletion::default());
     }
-    candidates.sort_by(|lhs, rhs| lhs.completion.cmp(&rhs.completion));
+    candidates.sort_by(|lhs, rhs| crate::string_utils::cpp_str_cmp(&lhs.completion, &rhs.completion));
     candidates.dedup_by(|a, b| a.completion == b.completion);
     Ok(InsertCompletion { candidates, begin: replace_begin, end: cursor_pos, timestamp: buffer.timestamp() })
 }

@@ -1609,7 +1609,10 @@ fn highlight_selections(context: &HighlightContext, display_buffer: &mut Display
     }
     for (i, &(_, coord)) in selections.iter().enumerate() {
         let primary = i == main_index;
-        let eol = buffer.line_length(coord.line) - 1 == coord.column;
+        // [DEVIATION] a cursor can be left on the end coordinate (e.g. after
+        // piping a selection through a command with no output), where the C++
+        // reads past the end of its line vector; treat it as not at an eol
+        let eol = coord.line < buffer.line_count() && buffer.line_length(coord.line) - 1 == coord.column;
         highlight_range(
             display_buffer,
             coord,

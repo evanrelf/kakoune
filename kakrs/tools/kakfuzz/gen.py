@@ -134,7 +134,10 @@ def prompt_edit(r):
         toks.append(r.choice(["<tab>", "<s-tab>", "<c-a>", "<c-e>", "<c-w>", "<c-u>", "<c-k>", "<left>",
                               "<right>", "<a-f>", "<a-b>", "<up>", "<down>", "<c-r>\"", "<c-r><c-w>",
                               "<backspace>", "<del>", "x", "<space>", "<c-o>", "<c-x>", "<a-!>"]))
-    toks.append(r.choice(["<esc>", "<esc>", "<ret>"]))
+    # completing then validating a : prompt can run any command, quit and
+    # kill included, which ends the run: only validate without completion
+    completed = any(t in ("<tab>", "<s-tab>", "<up>", "<down>", "<c-u>", "<c-w>") for t in toks)
+    toks.append("<esc>" if k == ":" and completed else r.choice(["<esc>", "<esc>", "<ret>"]))
     return toks
 
 
