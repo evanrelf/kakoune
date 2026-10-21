@@ -50,3 +50,11 @@ listed in `UPSTREAM-QUIRKS.md`. The port only deviates where it has to:
   cancel): the idle callback returns `ControlFlow::Break` and the error is
   returned through `UrgentEventsIdle::check`, where the C++ unwinds through
   the regex engine with an exception.
+
+## Testing
+
+- `cargo test`: ported C++ unit tests and hegel property tests.
+- `./run-tests.sh [dirs...]`: the upstream integration suite (`../test`)
+  against the Rust binary (`PROFILE=release` for the release build).
+- `python3 tools/difffuzz.py <seed> <count>`: differential fuzzing of random
+  normal mode key sequences against the C++ build (`../src/kak`).

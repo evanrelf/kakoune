@@ -30,6 +30,15 @@ question are marked **needs decision**.
 A hang is worse than an error: the editor stops responding, and the panic
 handler that backs up modified buffers never runs.
 
+## Crashes
+
+- **Nested paragraphs ending in blank lines** (`<a-I>p`/`<a-A>p`,
+  `selectors::select_nested_paragraphs`): when the rest of a selection is
+  only end of lines, the new selection starts at the buffer end coordinate,
+  past the last line. The next edit reads out of bounds: the C++ segfaults,
+  the port panics (both back up modified buffers and exit). Found by the
+  differential fuzzer, e.g. `,o)<esc>3%.<a-I>pc` on a two line buffer.
+
 ## Event loop
 
 - **Forced fds block** (`EventManager::handle_next_events`): when a fd is
@@ -44,6 +53,14 @@ handler that backs up modified buffers never runs.
   inserted completion is recorded one key per byte, each byte a sign extended
   `char` (`for (auto& c : completion) record_key(c)`). Replaying it with `.`
   inserts nothing for non ASCII characters.
+
+## Selections
+
+- **`s` and `S` leave the selection list unsorted**: `select_regex` and
+  `split_regex` build the result with the `SelectionList{buffer, vector}`
+  constructor, which (unlike assigning a vector) does not sort. With
+  duplicated selections (`+`), `S^<ret>` leaves e.g. lines 1..5 then 1..5
+  again, breaking the sorted list invariant that later commands assume.
 
 ## Highlighters
 
@@ -114,6 +131,11 @@ handler that backs up modified buffers never runs.
   `std::sort` with such a comparator is undefined behaviour; Rust's `sort_by`
   may panic ("user-provided comparison function does not correctly implement
   a total order") on candidates containing NUL or invalid UTF-8.
+- **Inner argument at the buffer start** (`<a-i>u`,
+  `selectors::select_argument`): the C++ steps before the first character,
+  then segfaults or produces negative coordinates (e.g. `1.1,-1.64`). The
+  port stops at the buffer start. Found by the differential fuzzer with
+  `fad<a-i>u` on a buffer starting with `   // "str"`.
 - **`+` / `+:` command line argument** (open at the end of the file):
   `main.cc` deduces `client_init` as a `StringView`, so
   `client_init = client_init + "; exec gj"` leaves it pointing to a freed

@@ -1111,7 +1111,10 @@ pub fn select_nested_numbers(context: &Context, _count: i32, flags: ObjectFlags)
             if it == start {
                 it.step();
             } else if find_if(start, &it, is_digit) != it {
-                res.push(Selection::from_range(start.coord(), buffer.char_prev(it.coord())));
+                // [FAITHFUL] when only end of lines remain, start is `end` and the
+            // selection goes past the buffer end; a later edit then crashes
+            // (see UPSTREAM-QUIRKS.md)
+            res.push(Selection::from_range(start.coord(), buffer.char_prev(it.coord())));
             }
         }
         Ok(())

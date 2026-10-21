@@ -1281,7 +1281,9 @@ fn select_regex(context: &Context, params: NormalParams) -> Result<()> {
                 let sels = context.selections().clone();
                 let buffer = sels.buffer().clone();
                 let res = selectors::select_matches(&buffer, sels.as_slice(), &ex, capture)?;
-                context.selections().assign(res);
+                // [FAITHFUL] the C++ builds a SelectionList from the vector, which
+                // (unlike assigning a vector) does not sort it
+                *context.selections() = SelectionList::from_vec(buffer, res);
             }
             Ok(())
         }),
@@ -1302,7 +1304,9 @@ fn split_regex(context: &Context, params: NormalParams) -> Result<()> {
                 let sels = context.selections().clone();
                 let buffer = sels.buffer().clone();
                 let res = selectors::split_on_matches(&buffer, sels.as_slice(), &ex, capture)?;
-                context.selections().assign(res);
+                // [FAITHFUL] the C++ builds a SelectionList from the vector, which
+                // (unlike assigning a vector) does not sort it
+                *context.selections() = SelectionList::from_vec(buffer, res);
             }
             Ok(())
         }),
